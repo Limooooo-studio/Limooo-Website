@@ -378,6 +378,12 @@ So "temporarily not booking" is data end to end: flip 棚拍 from `否` to `是`
 next deploy, with no template or locale edit. The two can never disagree. Any
 other value (e.g. `maybe`) fails the build rather than silently guessing.
 
+**`价格` may be `N/A`** (also `n/a` / `NA` / `n.a.`, trimmed and
+case-insensitive): the tier renders a bare `N/A` — no `CNY` prefix and no unit
+suffix — for tiers whose price is not published yet. `N/A` is "no number", not
+"free", so it is never treated as `0`; mixing `N/A` and numeric rows in one
+file is fine.
+
 The rest of the contract is:
 
 - convention rows come from the CSV in **ascending shot-count order**; the number
@@ -387,10 +393,11 @@ The rest of the contract is:
 - outdoor rows must cover all four `类型/人数` combinations; they render in a
   fixed order (studio solo/duo, then outdoor solo/duo) regardless of row order
 
-A missing file, wrong column, non-positive or non-integer price, duplicate tier,
-unknown tier or unrecognized `是否接单` value **fails the build** — a wrong price
-list is worse than a failed build. `tests/test_services_pricing.py` covers all of
-these cases plus a round-trip check against the committed CSVs.
+A missing file, wrong column, a price that is neither a positive integer nor
+`N/A`, duplicate tier, unknown tier or unrecognized `是否接单` value **fails the
+build** — a wrong price list is worse than a failed build.
+`tests/test_services_pricing.py` covers all of these cases plus a round-trip
+check against the committed CSVs.
 
 `docs/services/` is excluded from the VitePress build (`srcExclude` in
 `docs/.vitepress/config.mts`), so the CSVs stay a data source and are never

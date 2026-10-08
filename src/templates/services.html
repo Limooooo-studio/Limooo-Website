@@ -88,7 +88,7 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>. #}
         <div class="plan-grid plan-grid-quad">
             {% for plan in pricing.convention %}
             <div class="plan">
-                <p class="plan-price{% if plan.strikethrough %} strikethrough{% endif %}"><span class="price-num">CNY {{ plan.price }}{% if plan.unit_key %}<span class="plan-unit" data-i18n="{{ plan.unit_key }}">{{ _(plan.unit_key) }}</span>{% endif %}</span></p>
+                <p class="plan-price{% if plan.strikethrough %} strikethrough{% endif %}"><span class="price-num">{% if plan.price_na %}N/A{% else %}CNY {{ plan.price }}{% if plan.unit_key %}<span class="plan-unit" data-i18n="{{ plan.unit_key }}">{{ _(plan.unit_key) }}</span>{% endif %}{% endif %}</span></p>
             </div>
             {% endfor %}
         </div>
@@ -130,7 +130,7 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>. #}
             {% for plan in pricing.outdoor %}
             <div class="plan">
                 <p class="plan-tag" data-i18n="{{ plan.plan_key }}">{{ _(plan.plan_key) }}</p>
-                <p class="plan-price{% if plan.strikethrough %} strikethrough{% endif %}"><span class="price-num">CNY {{ plan.price }}<span class="plan-unit" data-i18n="unit_per_hour">{{ _('unit_per_hour') }}</span></span></p>
+                <p class="plan-price{% if plan.strikethrough %} strikethrough{% endif %}"><span class="price-num">{% if plan.price_na %}N/A{% else %}CNY {{ plan.price }}<span class="plan-unit" data-i18n="unit_per_hour">{{ _('unit_per_hour') }}</span>{% endif %}</span></p>
             </div>
             {% endfor %}
         </div>

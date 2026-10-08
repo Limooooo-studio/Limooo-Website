@@ -247,6 +247,59 @@ def test_services_page_renders_csv_prices(services_dir):
     assert html.count('class="plan-price strikethrough"') == 2
 
 
+@pytest.mark.parametrize("literal", ["N/A", "n/a", "NA", " N/A "])
+def test_price_accepts_na(services_dir, literal):
+    """价格列允许 N/A（大小写/空格不敏感）→ price=None + price_na=True，不再让构建失败。"""
+    _write(
+        services_dir,
+        CONVENTION_CSV,
+        f"张数,价格\n1,{literal}\n3,55\n6,100\n9,150\n",
+    )
+    _write(
+        services_dir,
+        OUTDOOR_CSV,
+        "类型,人数,价格\n"
+        f"棚拍,单人,{literal}\n棚拍,双人,150\n外景,单人,120\n外景,双人,180\n",
+    )
+
+    pricing = load_pricing()
+
+    assert pricing["convention"][0]["price"] is None
+    assert pricing["convention"][0]["price_na"] is True
+    assert pricing["convention"][1]["price_na"] is False
+    assert pricing["outdoor"][0]["price"] is None
+    assert pricing["outdoor"][0]["price_na"] is True
+    assert [plan["price_na"] for plan in pricing["outdoor"]] == [
+        True,
+        False,
+        False,
+        False,
+    ]
+
+
+def test_na_price_renders_without_cny_or_unit(services_dir):
+    """N/A 渲染成裸 N/A：不带 CNY 前缀、也不带单位后缀；同页其他档位照旧。"""
+    _write(services_dir, CONVENTION_CSV, "张数,价格\n1,N/A\n3,55\n6,100\n9,150\n")
+    _write(
+        services_dir,
+        OUTDOOR_CSV,
+        "类型,人数,价格\n棚拍,单人,N/A\n棚拍,双人,150\n外景,单人,120\n外景,双人,180\n",
+    )
+
+    html = build.render_page(RENDER_APP, "services.html", "/services", "zh-cn")
+
+    assert '<span class="price-num">N/A</span>' in html
+    assert "CNY N/A" not in html
+    assert re.findall(r'<span class="price-num">CNY (\d+)', html) == [
+        "55",
+        "100",
+        "150",
+        "150",
+        "120",
+        "180",
+    ]
+
+
 def test_services_page_matches_committed_csv():
     """仓库里真实的 CSV 必须能渲染（防止只改 CSV 改坏格式就提交/部署）。"""
     pricing = load_pricing()
@@ -258,6 +311,6 @@ def test_services_page_matches_committed_csv():
     assert shots == sorted(shots) and len(set(shots)) == len(shots)
 
     html = build.render_page(RENDER_APP, "services.html", "/services", "zh-cn")
-    assert len(re.findall(r'<span class="price-num">CNY (\d+)', html)) == (
-        len(pricing["convention"]) + 4
-    )
+    # 每个档位都必须渲染出一个价格格（数值或 N/A），数量跟 CSV 对齐
+    assert html.count('<span class="price-num">') == len(pricing["convention"]) + 4
+    assert "None" not in html
