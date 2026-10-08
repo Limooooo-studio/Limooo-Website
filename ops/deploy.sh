@@ -50,6 +50,7 @@
 #   LIMOOO_DEPLOY_VERBOSE=1   same as --full
 #   LIMOOO_SKIP_DOCS=1        drop the docs.limooo.cn step
 #   LIMOOO_SKIP_CHECKS=1      skip the local CI replica before commit / push
+#   LIMOOO_GIT_FILE_LIST_LIMIT=N  max file names printed per commit (default 20)
 # Credentials are read from local secrets/webauthn.env; never written to disk or echoed.
 
 set -euo pipefail
@@ -64,6 +65,8 @@ DO_DOCS=0
 WORKER=""
 DRY_RUN=0
 VERBOSE="${LIMOOO_DEPLOY_VERBOSE:-0}"
+# 提交时最多列出多少个文件名，超出只报剩余数量（避免一次提交刷屏）
+GIT_FILE_LIST_LIMIT="${LIMOOO_GIT_FILE_LIST_LIMIT:-20}"
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -165,9 +168,23 @@ if [ "$DO_COMMIT" = 1 ]; then
         if git diff --cached --quiet; then
             echo "Git: nothing to commit"
         else
+            echo "Git: committing"
+            # 列出本次提交涉及的文件（两空格缩进，见 AGENTS.md 的输出约定）
+            staged_files="$(git diff --cached --name-only)"
+            staged_total=0
+            [ -n "$staged_files" ] && staged_total="$(printf '%s\n' "$staged_files" | wc -l | tr -d ' ')"
+            staged_shown=0
+            while IFS= read -r path; do
+                [ -z "$path" ] && continue
+                [ "$staged_shown" -ge "$GIT_FILE_LIST_LIMIT" ] && break
+                echo "  $path"
+                staged_shown=$((staged_shown + 1))
+            done <<< "$staged_files"
+            if [ "$staged_total" -gt "$staged_shown" ]; then
+                echo "  ... and $((staged_total - staged_shown)) more"
+            fi
             show_cmd git commit -m "deploy: auto-commit <timestamp>"
             git commit -m "deploy: auto-commit $(date '+%Y-%m-%d %H:%M')" >/dev/null
-            echo "Git: committed local changes"
         fi
         # 刚提交的这棵树就是 ⓪ 里检查过的内容，pre-push hook 不必再跑一遍。
         export LIMOOO_CI_CHECKED_SHA="$(git rev-parse HEAD)"
@@ -188,7 +205,7 @@ if [ "$DO_PUSH" = 1 ]; then
         elif git merge-base --is-ancestor "$REMOTE_HEAD" "$LOCAL_HEAD"; then
             show_cmd git push origin main
             if git push origin main >/dev/null 2>&1; then
-                echo "Git: pushed to GitHub"
+                echo "Git: Push to GitHub"
             else
                 echo "Warning: git push failed, continuing deploy" >&2
             fi
