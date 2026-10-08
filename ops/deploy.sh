@@ -168,11 +168,15 @@ if [ "$DO_COMMIT" = 1 ]; then
         if git diff --cached --quiet; then
             echo "Git: nothing to commit"
         else
-            echo "Git: committing"
-            # 列出的文件名与上一行 "committing" 的首字符对齐（"Git: " 占 5 列）
+            # 文件名要先取：短 SHA 只有提交后才知道，所以先 commit，再打印这一块
             staged_files="$(git diff --cached --name-only)"
             staged_total=0
             [ -n "$staged_files" ] && staged_total="$(printf '%s\n' "$staged_files" | wc -l | tr -d ' ')"
+            show_cmd git commit -m "deploy: auto-commit <timestamp>"
+            git commit -m "deploy: auto-commit $(date '+%Y-%m-%d %H:%M')" >/dev/null
+            # 版本号 = 本次新提交的短 SHA
+            echo "Git: committing $(git rev-parse --short HEAD)"
+            # 文件名与上一行 "committing" 的首字符对齐（"Git: " 占 5 列）
             staged_shown=0
             while IFS= read -r path; do
                 [ -z "$path" ] && continue
@@ -183,8 +187,6 @@ if [ "$DO_COMMIT" = 1 ]; then
             if [ "$staged_total" -gt "$staged_shown" ]; then
                 echo "     ... and $((staged_total - staged_shown)) more"
             fi
-            show_cmd git commit -m "deploy: auto-commit <timestamp>"
-            git commit -m "deploy: auto-commit $(date '+%Y-%m-%d %H:%M')" >/dev/null
         fi
         # 刚提交的这棵树就是 ⓪ 里检查过的内容，pre-push hook 不必再跑一遍。
         export LIMOOO_CI_CHECKED_SHA="$(git rev-parse HEAD)"
