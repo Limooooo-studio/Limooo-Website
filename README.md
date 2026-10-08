@@ -79,7 +79,7 @@ A fully serverless personal website and admin system running at [limooo.cn](http
 ├── locales/               # i18n / translation catalogs
 ├── public/                # Pages build output (git keeps only .gitkeep)
 ├── preview/               # local preview (build-generated; git keeps only .gitkeep)
-└── docs/                  # architecture plan status (workspace root, see ../docs)
+└── docs/                  # docs.limooo.cn VitePress root + services.limooo.cn price-list CSVs
 ```
 
 ## Quick start
@@ -124,7 +124,7 @@ bash ops/pages_deploy.sh --build-only
 # build + validate + deploy Pages + smoke test (/_health must be 200)
 bash ops/pages_deploy.sh
 
-# full deploy: (1) commit (2) push (3) Pages — the "full deploy" contract in AGENTS.md
+# full deploy: (1) commit (2) push (3) deploy Pages + docs
 bash ops/deploy.sh --all
 ```
 
@@ -142,9 +142,7 @@ Credentials are read from the local `secrets/webauthn.env` (never committed, nev
 echoed); there are no ssh / rsync / remote systemd steps.
 `ops/migrate_d1.sh` and `ops/workers_deploy.sh` also support `--dry-run`.
 
-Per current workspace rules, do not run deployment without explicit confirmation.
-
-Automated test entry points are provided (see docs/03):
+Automated test entry points are provided:
 
 ```bash
 # Python tests (the build virtualenv is created by ops/build.sh)
@@ -204,28 +202,22 @@ Output is quiet by default (one status line per step); add `--full` to watch the
 process. `--dry-run` works with any combination of the flags above.
 
 Credentials are read from the local `secrets/webauthn.env`; there are no ssh, rsync,
-systemd or Nginx steps. See `../AGENTS.md` for the full deploy contract.
+systemd or Nginx steps.
 
 ### Docs site (docs.limooo.cn)
 
 `Flask/docs/` is a **per-subdomain container**: `docs/` holds the docs.limooo.cn
 VitePress root (one markdown file per page per language), `services/` holds the
-services.limooo.cn price-list CSVs. The language code is the **last** URL segment
-(`zh-cn` is explicit too; a suffix-less path 302s to it):
+services.limooo.cn price-list CSVs. The language code is the **last** URL segment and
+content pages carry it explicitly (`/README/zh-cn`, `/README/en-us`); a suffix-less
+`/README` 302s to `/README/zh-cn`, and the home page `/` is the one exception.
 
-| Source (under `Flask/docs/docs/`) | URL |
-| --- | --- |
-| `video-platform.md` | `/video-platform/zh-cn` |
-| `en-us/video-platform.md` | `/video-platform/en-us` |
-| `README.md` | `/README/zh-cn` |
-| `LICENSE.md` | `/LICENSE/zh-cn` |
-| `en-us/index.md` | `/en-us` |
-
-`.vitepress/rewrites.json` (beside the content) maps those sources onto the suffixed
+`.vitepress/rewrites.json` (beside the content) maps the markdown sources onto those suffixed
 routes, and `.vitepress/config.mts` gives each page its own `lang` / `themeConfig`
 through `additionalConfig`. Add a page by dropping a markdown file in each language
-directory plus a rewrites entry — `ops/docs_check_output.py` fails the build if any
-markdown file has no HTML.
+directory, plus a rewrites entry and a 302 in `public/_redirects` for the
+suffix-less path — `ops/docs_check_output.py` fails the build if any markdown file
+has no HTML.
 
 The site is built with VitePress from the fork `Limooooo-Studio/vitepress`: the header
 and footer live in the fork (`VPLimoooNav.vue` / `VPLimoooFooter.vue`) and mirror the
@@ -279,11 +271,11 @@ copy with a build (`bash ops/build.sh`, which runs `ops/check_gate_trust.py --em
 ## Source of truth
 
 - User-facing strings: `locales/*.json`; `functions/_data/*` and API i18n routes are generated from it.
-- Shared runtime constants: `config-contract.json` is the agreed cross-runtime contract; `src/config.py` and the generated `functions/_lib/config.ts` both consume it, with `ops/check_config_contract.py` enforcing agreement (docs/02).
+- Shared runtime constants: `config-contract.json` is the agreed cross-runtime contract; `src/config.py` and the generated `functions/_lib/config.ts` both consume it, with `ops/check_config_contract.py` enforcing agreement.
 - Gate/redirect copy: `locales/*.json` via `functions/_data/runtime.ts`; `src/build.py` assembles it.
 - D1 schema and migrations: `ops/migrations/*.sql`; `blocked_ips` is the sole authority for blocking.
-- Security response headers baseline (when enabled): `ops/security-headers.json` (docs/05).
-- Deployment and server boundaries: workspace `../AGENTS.md`.
+- Security response headers baseline (when enabled): `ops/security-headers.json`.
+- Deployment and runtime boundaries: `ops/deploy.sh`; Cloudflare Pages and Workers are the only runtimes.
 
 ## Cloudflare Pages runtime
 

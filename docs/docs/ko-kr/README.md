@@ -85,7 +85,7 @@ description: "Limooo 웹사이트 및 관리 시스템(Cloudflare 완전 서버�
 ├── locales/               # i18n / translation catalogs
 ├── public/                # Pages build output (git keeps only .gitkeep)
 ├── preview/               # local preview (build-generated; git keeps only .gitkeep)
-└── docs/                  # architecture plan status (workspace root, see ../docs)
+└── docs/                  # docs.limooo.cn VitePress root + services.limooo.cn price-list CSVs
 ```
 
 ## 빠른 시작
@@ -130,7 +130,7 @@ bash ops/pages_deploy.sh --build-only
 # build + validate + deploy Pages + smoke test (/_health must be 200)
 bash ops/pages_deploy.sh
 
-# full deploy: (1) commit (2) push (3) Pages — the "full deploy" contract in AGENTS.md
+# full deploy: (1) commit (2) push (3) deploy Pages + docs
 bash ops/deploy.sh --all
 ```
 
@@ -148,9 +148,7 @@ bash ops/deploy.sh --all
 출력하지 않음), ssh / rsync / 원격 systemd 단계는 없습니다.
 `ops/migrate_d1.sh`와 `ops/workers_deploy.sh`도 `--dry-run`을 지원합니다.
 
-현재 워크스페이스 규칙에 따라, 명시적인 확인 없이 배포를 실행하지 마세요.
-
-자동화된 테스트 진입점이 마련되어 있습니다(docs/03 참고):
+자동화된 테스트 진입점이 마련되어 있습니다:
 
 ```bash
 # Python tests (the build virtualenv is created by ops/build.sh)
@@ -211,28 +209,21 @@ Pages + docs, 즉 "전체 배포" 계약입니다. 로컬에 이미 커밋된 �
 추가하세요. `--dry-run`은 위 플래그의 어떤 조합과도 함께 쓸 수 있습니다.
 
 자격 증명은 로컬 `secrets/webauthn.env`에서 읽으며, ssh, rsync, systemd, Nginx 단계는
-없습니다. 전체 배포 계약은 `../AGENTS.md`를 참고하세요.
+없습니다.
 
 ### 문서 사이트(docs.limooo.cn)
 
 `Flask/docs/`는 **서브도메인별 컨테이너**입니다: `docs/`에는 docs.limooo.cn
 VitePress 루트(언어별·페이지별 마크다운 파일 하나)가, `services/`에는
-services.limooo.cn 가격표 CSV가 들어 있습니다. 언어 코드는 URL의 **마지막**
-세그먼트입니다(`zh-cn`도 명시적으로 붙습니다. 접미사 없는 경로는 302로 이쪽으로 옵니다):
+services.limooo.cn 가격표 CSV가 들어 있습니다. 언어 코드는 URL의 **마지막** 세그먼트이고,
+콘텐츠 페이지는 항상 명시적으로 붙입니다(`/README/zh-cn`, `/README/en-us`). 접미사 없는
+`/README`는 `/README/zh-cn`으로 302되며, 홈 `/`만 예외입니다.
 
-| 소스 (`Flask/docs/docs/` 아래) | URL |
-| --- | --- |
-| `video-platform.md` | `/video-platform/zh-cn` |
-| `en-us/video-platform.md` | `/video-platform/en-us` |
-| `README.md` | `/README/zh-cn` |
-| `LICENSE.md` | `/LICENSE/zh-cn` |
-| `en-us/index.md` | `/en-us` |
-
-`.vitepress/rewrites.json`(콘텐츠 옆에 있음)이 이 소스들을 접미사가 붙은 라우트로
+`.vitepress/rewrites.json`(콘텐츠 옆에 있음)이 소스들을 접미사가 붙은 라우트로
 매핑하고, `.vitepress/config.mts`가 `additionalConfig`를 통해 각 페이지에 고유한
-`lang` / `themeConfig`를 부여합니다. 페이지를 추가하려면 각 언어 디렉터리에 마크다운
-파일을 넣고 rewrites 항목을 더하면 됩니다 — 마크다운 파일에 대응하는 HTML이 없으면
-`ops/docs_check_output.py`가 빌드를 실패시킵니다.
+`lang` / `themeConfig`를 부여합니다. 페이지를 추가하려면 각 언어 디렉터리에 마크다운 파일을 넣고 rewrites 항목과
+`public/_redirects`의 접미사 없는 경로용 302 한 줄을 더하면 됩니다 — 마크다운 파일에
+대응하는 HTML이 없으면 `ops/docs_check_output.py`가 빌드를 실패시킵니다.
 
 이 사이트는 포크 `Limooooo-Studio/vitepress`의 VitePress로 빌드합니다: 헤더와
 푸터는 포크(`VPLimoooNav.vue` / `VPLimoooFooter.vue`)에 있고 메인 사이트의
@@ -287,11 +278,11 @@ Cloudflare WAF `js_challenge` 규칙으로 미러링됩니다. `data/whitelist.t
 ## 신뢰의 원천(source of truth)
 
 - 사용자 노출 문자열: `locales/*.json`; `functions/_data/*`와 API i18n 라우트는 여기서 생성됩니다.
-- 공유 런타임 상수: `config-contract.json`은 런타임 간에 합의된 계약이며, `src/config.py`와 생성된 `functions/_lib/config.ts`가 이를 함께 사용하고 `ops/check_config_contract.py`가 일치를 강제합니다(docs/02).
+- 공유 런타임 상수: `config-contract.json`은 런타임 간에 합의된 계약이며, `src/config.py`와 생성된 `functions/_lib/config.ts`가 이를 함께 사용하고 `ops/check_config_contract.py`가 일치를 강제합니다.
 - 게이트/리다이렉트 문구: `functions/_data/runtime.ts`를 통한 `locales/*.json`이며, `src/build.py`가 이를 조립합니다.
 - D1 스키마와 마이그레이션: `ops/migrations/*.sql`; 차단에 관한 한 `blocked_ips`가 유일한 권위입니다.
-- 보안 응답 헤더 기준선(활성화된 경우): `ops/security-headers.json` (docs/05).
-- 배포 및 서버 경계: 워크스페이스 `../AGENTS.md`.
+- 보안 응답 헤더 기준선(활성화된 경우): `ops/security-headers.json`.
+- 배포 및 런타임 경계: `ops/deploy.sh`. 런타임은 Cloudflare Pages와 Workers뿐입니다.
 
 ## Cloudflare Pages 런타임
 

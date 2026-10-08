@@ -85,7 +85,7 @@ description: "Limooo 网站与管理系统（Cloudflare 全无服务器架构）
 ├── locales/               # i18n / translation catalogs
 ├── public/                # Pages build output (git keeps only .gitkeep)
 ├── preview/               # local preview (build-generated; git keeps only .gitkeep)
-└── docs/                  # architecture plan status (workspace root, see ../docs)
+└── docs/                  # docs.limooo.cn VitePress root + services.limooo.cn price-list CSVs
 ```
 
 ## 快速开始
@@ -130,7 +130,7 @@ bash ops/pages_deploy.sh --build-only
 # build + validate + deploy Pages + smoke test (/_health must be 200)
 bash ops/pages_deploy.sh
 
-# full deploy: (1) commit (2) push (3) Pages — the "full deploy" contract in AGENTS.md
+# full deploy: (1) commit (2) push (3) deploy Pages + docs
 bash ops/deploy.sh --all
 ```
 
@@ -148,9 +148,7 @@ bash ops/deploy.sh --all
 没有 ssh / rsync / 远端 systemd 步骤。`ops/migrate_d1.sh` 与
 `ops/workers_deploy.sh` 也支持 `--dry-run`。
 
-按当前工作区规则，未经明确确认不要运行部署。
-
-已提供自动化测试入口（见 docs/03）：
+已提供自动化测试入口：
 
 ```bash
 # Python tests (the build virtualenv is created by ops/build.sh)
@@ -210,27 +208,19 @@ docs，即「完整部署」契约。若要只发布本地已提交的内容，
 `--dry-run` 可与上述任意标志组合使用。
 
 凭据从本地 `secrets/webauthn.env` 读取；没有 ssh、rsync、systemd 或 Nginx 步骤。
-完整部署契约见 `../AGENTS.md`。
 
 ### 文档站（docs.limooo.cn）
 
 `Flask/docs/` 是一个**按子域分目录的容器**：`docs/` 存放 docs.limooo.cn 的
 VitePress 根（每种语言每页一个 markdown 文件），
 `services/` 存放 services.limooo.cn 的价目表 CSV。
-语言码是 URL 的**最后**一段（`zh-cn` 也显式带上；无后缀路径会 302 过来）：
+语言码是 URL 的**最后**一段，内容页一律显式带上（`/README/zh-cn`、`/README/en-us`）；
+无后缀的 `/README` 会 302 到 `/README/zh-cn`，首页 `/` 是唯一例外。
 
-| 源文件（位于 `Flask/docs/docs/` 下） | URL |
-| --- | --- |
-| `video-platform.md` | `/video-platform/zh-cn` |
-| `en-us/video-platform.md` | `/video-platform/en-us` |
-| `README.md` | `/README/zh-cn` |
-| `LICENSE.md` | `/LICENSE/zh-cn` |
-| `en-us/index.md` | `/en-us` |
-
-`.vitepress/rewrites.json`（与内容同级）把这些源文件映射到带后缀的路由，
+`.vitepress/rewrites.json`（与内容同级）把源文件映射到带后缀的路由，
 `.vitepress/config.mts` 通过 `additionalConfig` 为每个页面设置各自的
-`lang` / `themeConfig`。新增页面时，只需在每个语言目录中各放一个 markdown 文件，
-再加一条 rewrites 条目 —— 如果任何 markdown 文件没有产出 HTML，
+`lang` / `themeConfig`。新增页面时，只需在每个语言目录中各放一个 markdown 文件，再加一条 rewrites 条目，
+并在 `public/_redirects` 里为无后缀路径补一条 302 —— 如果任何 markdown 文件没有产出 HTML，
 `ops/docs_check_output.py` 会让构建失败。
 
 该站点使用来自 fork `Limooooo-Studio/vitepress` 的 VitePress 构建：
@@ -285,11 +275,11 @@ ASN 列表来源于 [china-mainland-asn](https://github.com/xingpingcn/china-mai
 ## 权威来源
 
 - 面向用户的文案：`locales/*.json`；`functions/_data/*` 与 API 的 i18n 路由都由它生成。
-- 共享运行时常量：`config-contract.json` 是约定的跨运行时契约；`src/config.py` 与生成的 `functions/_lib/config.ts` 都消费它，并由 `ops/check_config_contract.py` 强制保持一致（docs/02）。
+- 共享运行时常量：`config-contract.json` 是约定的跨运行时契约；`src/config.py` 与生成的 `functions/_lib/config.ts` 都消费它，并由 `ops/check_config_contract.py` 强制保持一致。
 - 门禁/跳转文案：经由 `functions/_data/runtime.ts` 来自 `locales/*.json`；由 `src/build.py` 组装。
 - D1 结构与迁移：`ops/migrations/*.sql`；`blocked_ips` 是封禁的唯一权威。
-- 安全响应头基线（启用时）：`ops/security-headers.json`（docs/05）。
-- 部署与服务器边界：工作区 `../AGENTS.md`。
+- 安全响应头基线（启用时）：`ops/security-headers.json`。
+- 部署与运行时边界：`ops/deploy.sh`；只有 Cloudflare Pages + Workers 两个运行时。
 
 ## Cloudflare Pages 运行时
 

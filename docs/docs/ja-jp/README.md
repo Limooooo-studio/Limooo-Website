@@ -85,7 +85,7 @@ description: "Limooo のウェブサイトと管理システム（Cloudflare 完
 ├── locales/               # i18n / translation catalogs
 ├── public/                # Pages build output (git keeps only .gitkeep)
 ├── preview/               # local preview (build-generated; git keeps only .gitkeep)
-└── docs/                  # architecture plan status (workspace root, see ../docs)
+└── docs/                  # docs.limooo.cn VitePress root + services.limooo.cn price-list CSVs
 ```
 
 ## クイックスタート
@@ -130,7 +130,7 @@ bash ops/pages_deploy.sh --build-only
 # build + validate + deploy Pages + smoke test (/_health must be 200)
 bash ops/pages_deploy.sh
 
-# full deploy: (1) commit (2) push (3) Pages — the "full deploy" contract in AGENTS.md
+# full deploy: (1) commit (2) push (3) deploy Pages + docs
 bash ops/deploy.sh --all
 ```
 
@@ -148,9 +148,7 @@ bash ops/deploy.sh --all
 エコーもされません）。ssh / rsync / リモート systemd のステップはありません。
 `ops/migrate_d1.sh` と `ops/workers_deploy.sh` も `--dry-run` に対応しています。
 
-現在のワークスペースの規約により、明示的な確認なしにデプロイを実行しないでください。
-
-自動テストの入口を用意しています（docs/03 参照）：
+自動テストの入口を用意しています：
 
 ```bash
 # Python tests (the build virtualenv is created by ops/build.sh)
@@ -210,28 +208,21 @@ bash ops/deploy.sh --all --full             # same, but stream every step's outp
 `--dry-run` は上記のフラグのどの組み合わせでも動作します。
 
 認証情報はローカルの `secrets/webauthn.env` から読み込みます。ssh、rsync、
-systemd、Nginx のステップはありません。デプロイの契約全体は `../AGENTS.md` を参照してください。
+systemd、Nginx のステップはありません。
 
 ### ドキュメントサイト（docs.limooo.cn）
 
 `Flask/docs/` は**サブドメインごとのコンテナ**です：`docs/` には docs.limooo.cn の
  VitePress ルート（1 ページ 1 言語につき 1 つの markdown ファイル）が入り、`services/` には
- services.limooo.cn の価格表 CSV が入ります。言語コードは URL の**最後**のセグメントです
-（`zh-cn` も明示的に付けます。サフィックスなしのパスは 302 でこちらへ転送されます）：
+ services.limooo.cn の価格表 CSV が入ります。言語コードは URL の**最後**のセグメントで、
+内容ページは常に明示的に付けます（`/README/zh-cn`、`/README/en-us`）。サフィックスなしの
+`/README` は `/README/zh-cn` へ 302 で転送され、ホームの `/` だけが例外です。
 
-| ソース（`Flask/docs/docs/` 配下） | URL |
-| --- | --- |
-| `video-platform.md` | `/video-platform/zh-cn` |
-| `en-us/video-platform.md` | `/video-platform/en-us` |
-| `README.md` | `/README/zh-cn` |
-| `LICENSE.md` | `/LICENSE/zh-cn` |
-| `en-us/index.md` | `/en-us` |
-
-`.vitepress/rewrites.json`（コンテンツの隣）がこれらのソースをサフィックス付きルートにマッピングし、
+`.vitepress/rewrites.json`（コンテンツの隣）がソースをサフィックス付きルートにマッピングし、
 `.vitepress/config.mts` が `additionalConfig` を通じて各ページに固有の `lang` / `themeConfig` を与えます。
 ページを追加するには、各言語ディレクトリに markdown ファイルを 1 つ置き、
-rewrites のエントリを 1 行足すだけです — markdown ファイルに HTML が出力されないと
- `ops/docs_check_output.py` がビルドを失敗させます。
+rewrites のエントリと `public/_redirects` のサフィックスなしパス用 302 を 1 行足します —
+markdown ファイルに HTML が出力されないと `ops/docs_check_output.py` がビルドを失敗させます。
 
 サイトはフォーク `Limooooo-Studio/vitepress` の VitePress でビルドします。ヘッダーとフッターはフォーク側
 （`VPLimoooNav.vue` / `VPLimoooFooter.vue`）にあり、メインサイトの `base.html` / `_footer.html` を忠実に再現しています —
@@ -285,11 +276,11 @@ ASN リストは [china-mainland-asn](https://github.com/xingpingcn/china-mainla
 ## 唯一の情報源
 
 - ユーザー向けの文字列：`locales/*.json`。`functions/_data/*` と API の i18n ルートはそこから生成されます。
-- 共有ランタイム定数：`config-contract.json` がランタイム横断で合意された契約です。`src/config.py` と生成物 `functions/_lib/config.ts` の双方がこれを消費し、`ops/check_config_contract.py` が一致を強制します（docs/02）。
+- 共有ランタイム定数：`config-contract.json` がランタイム横断で合意された契約です。`src/config.py` と生成物 `functions/_lib/config.ts` の双方がこれを消費し、`ops/check_config_contract.py` が一致を強制します。
 - ゲート／リダイレクトの文言：`locales/*.json` を `functions/_data/runtime.ts` 経由で。`src/build.py` がそれを組み立てます。
 - D1 のスキーマとマイグレーション：`ops/migrations/*.sql`。ブロックの権威は `blocked_ips` のみです。
-- セキュリティレスポンスヘッダーの基準（有効時）：`ops/security-headers.json`（docs/05）。
-- デプロイとサーバーの境界：ワークスペースの `../AGENTS.md`。
+- セキュリティレスポンスヘッダーの基準（有効時）：`ops/security-headers.json`。
+- デプロイとランタイムの境界：`ops/deploy.sh`。ランタイムは Cloudflare Pages と Workers のみです。
 
 ## Cloudflare Pages ランタイム
 
