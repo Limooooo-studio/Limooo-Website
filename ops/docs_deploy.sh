@@ -54,6 +54,10 @@ TARBALL="$BUILD_DIR/vitepress.tgz"
 SHA_MARKER="$BUILD_DIR/vitepress.sha"
 
 PNPM_BIN="${PNPM_BIN:-pnpm}"
+# pnpm 发现 node_modules 由别的版本/store 建过时会停下来要求 TTY 确认删除目录，
+# 而部署是在非交互 shell 里跑的（报 ERR_PNPM_ABORTED_REMOVE_MODULES_DIR_NO_TTY）。
+# 这里的语义本来就是「依赖树对不上就重装」，所以直接授权它重建。
+PNPM_INSTALL_FLAGS="--config.confirmModulesPurge=false"
 WRANGLER_BIN="${WRANGLER_BIN:-/tmp/wrangler-env/node_modules/.bin/wrangler}"
 
 DRY_RUN=0
@@ -130,7 +134,7 @@ ensure_vitepress() {
     echo "[docs] building VitePress fork (pnpm install + tsdown)"
     (
         cd "$VITEPRESS_DIR"
-        "$PNPM_BIN" install --frozen-lockfile
+        "$PNPM_BIN" install --frozen-lockfile $PNPM_INSTALL_FLAGS
         "$PNPM_BIN" exec tsdown
     )
     echo "[docs] packing VitePress fork"
@@ -180,7 +184,7 @@ JSON
 echo "[docs] installing docs dependencies (vitepress from the fork tarball)"
 (
     cd "$SRC_DIR"
-    "$PNPM_BIN" install --no-frozen-lockfile --reporter=append-only
+    "$PNPM_BIN" install --no-frozen-lockfile --reporter=append-only $PNPM_INSTALL_FLAGS
 )
 
 if [ "$DEV" = 1 ]; then
