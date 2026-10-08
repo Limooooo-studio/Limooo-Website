@@ -243,7 +243,19 @@ export CI=1 WRANGLER_SEND_METRICS=false
 
 # ── ⑦ 冒烟 ──────────────────────────────────────────────────────────
 echo "[docs] post-deploy check"
-for path in / /video-platform /video-platform/en-us /video-platform/ja-jp /video-platform/ko-kr; do
+# 无后缀的内容页路径必须 302 到对应的 /<page>/zh-cn
+for path in /video-platform /README /LICENSE; do
+    code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 "https://${DOCS_HOST}${path}" || echo 000)"
+    if [ "$code" != "302" ]; then
+        echo "FATAL: https://${DOCS_HOST}${path} = ${code} (expected 302 to ${path}/zh-cn)" >&2
+        exit 1
+    fi
+    echo "[docs] ${path} = 302 OK"
+done
+
+for path in / /video-platform/zh-cn /video-platform/en-us /video-platform/ja-jp /video-platform/ko-kr \
+    /README/zh-cn /README/en-us /README/ja-jp /README/ko-kr \
+    /LICENSE/zh-cn /LICENSE/en-us /LICENSE/ja-jp /LICENSE/ko-kr; do
     code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 "https://${DOCS_HOST}${path}" || echo 000)"
     if [ "$code" != "200" ]; then
         echo "FATAL: https://${DOCS_HOST}${path} = ${code} (expected 200)" >&2

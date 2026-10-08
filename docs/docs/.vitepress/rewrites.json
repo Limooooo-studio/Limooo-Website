@@ -2,7 +2,16 @@
   "en-us/index.md": "en-us.md",
   "ja-jp/index.md": "ja-jp.md",
   "ko-kr/index.md": "ko-kr.md",
+  "video-platform.md": "video-platform/zh-cn.md",
   "en-us/video-platform.md": "video-platform/en-us.md",
   "ja-jp/video-platform.md": "video-platform/ja-jp.md",
-  "ko-kr/video-platform.md": "video-platform/ko-kr.md"
+  "ko-kr/video-platform.md": "video-platform/ko-kr.md",
+  "README.md": "README/zh-cn.md",
+  "en-us/README.md": "README/en-us.md",
+  "ja-jp/README.md": "README/ja-jp.md",
+  "ko-kr/README.md": "README/ko-kr.md",
+  "LICENSE.md": "LICENSE/zh-cn.md",
+  "en-us/LICENSE.md": "LICENSE/en-us.md",
+  "ja-jp/LICENSE.md": "LICENSE/ja-jp.md",
+  "ko-kr/LICENSE.md": "LICENSE/ko-kr.md"
 }

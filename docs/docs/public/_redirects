@@ -2,3 +2,12 @@
 /en-us/video-platform  /video-platform/en-us  301
 /ja-jp/video-platform  /video-platform/ja-jp  301
 /ko-kr/video-platform  /video-platform/ko-kr  301
+
+# 内容页一律带显式语言段（含默认语言 zh-cn）；无后缀路径 302 到中文版
+# （2026-10-08 定：/README、/LICENSE、/video-platform 都按这个规则）
+/video-platform   /video-platform/zh-cn  302
+/video-platform/  /video-platform/zh-cn  302
+/README           /README/zh-cn          302
+/README/          /README/zh-cn          302
+/LICENSE          /LICENSE/zh-cn         302
+/LICENSE/         /LICENSE/zh-cn         302

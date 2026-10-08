@@ -2,9 +2,16 @@
  * docs.limooo.cn — VitePress 站点配置
  *
  * 内容源：Flask/docs/docs/*.md（本目录，即 VitePress 根）
- *   video-platform.md            → /video-platform
+ *   video-platform.md            → /video-platform/zh-cn
  *   en-us/video-platform.md      → /video-platform/en-us
+ *   README.md                    → /README/zh-cn（Flask/README.md 的四语副本）
+ *   LICENSE.md                   → /LICENSE/zh-cn（Flask/LICENSE_zh_CN.md 的四语副本）
  *   en-us/index.md               → /en-us
+ *
+ * **内容页的 URL 一律带显式语言段，默认语言 zh-cn 也不例外**；不带语言段的
+ * `/video-platform`、`/README`、`/LICENSE` 由 docs/public/_redirects 302 到
+ * 对应的 `/.../zh-cn`（2026-10-08 定）。首页是唯一的例外：`/` 就是 zh-cn，
+ * `/en-us`、`/ja-jp`、`/ko-kr` 是其它语言。
  *
  * Flask/docs/ 是**按子域分目录**的容器：docs/ 归 docs.limooo.cn（本目录），
  * services/ 归 services.limooo.cn（价目表 CSV，由 src/services_pricing.py 读取）。
@@ -58,6 +65,15 @@ function routePath(basePath: string, code: string): string {
   return `${base}/${code}`
 }
 
+/**
+ * 内容页路径：语言码**一律显式带上**（默认语言 zh-cn 也是），
+ * 无后缀的 `/README`、`/LICENSE`、`/video-platform` 由 _redirects 302 过来。
+ * 首页不适用（`/` 就是 zh-cn），所以首页仍走 routePath。
+ */
+function contentPath(basePath: string, code: string): string {
+  return `${basePath}/${code}`
+}
+
 /** 每个语言一份 UI 文案；VitePress 不会自动翻译默认主题。 */
 interface Labels {
   title: string
@@ -67,7 +83,9 @@ interface Labels {
   navContact: string
   docsSection: string
   sidebarHome: string
+  sidebarReadme: string
   sidebarVideo: string
+  sidebarLicense: string
   sidebarMain: string
   outlineTitle: string
   sidebarMenuLabel: string
@@ -88,7 +106,9 @@ const labels: Record<string, Labels> = {
     navContact: '联系方式',
     docsSection: '文档',
     sidebarHome: '文档首页',
+    sidebarReadme: '项目说明 README',
     sidebarVideo: '视频平台',
+    sidebarLicense: '开源许可证',
     sidebarMain: '返回主站',
     outlineTitle: '本页目录',
     sidebarMenuLabel: '菜单',
@@ -107,7 +127,9 @@ const labels: Record<string, Labels> = {
     navContact: 'Contact',
     docsSection: 'Documentation',
     sidebarHome: 'Docs home',
+    sidebarReadme: 'Project README',
     sidebarVideo: 'Video platforms',
+    sidebarLicense: 'License',
     sidebarMain: 'Main site',
     outlineTitle: 'On this page',
     sidebarMenuLabel: 'Menu',
@@ -126,7 +148,9 @@ const labels: Record<string, Labels> = {
     navContact: 'お問い合わせ',
     docsSection: 'ドキュメント',
     sidebarHome: 'ドキュメント ホーム',
+    sidebarReadme: 'プロジェクト README',
     sidebarVideo: '動画プラットフォーム',
+    sidebarLicense: 'ライセンス',
     sidebarMain: 'メインサイト',
     outlineTitle: 'このページの目次',
     sidebarMenuLabel: 'メニュー',
@@ -145,7 +169,9 @@ const labels: Record<string, Labels> = {
     navContact: '문의',
     docsSection: '문서',
     sidebarHome: '문서 홈',
+    sidebarReadme: '프로젝트 README',
     sidebarVideo: '동영상 플랫폼',
+    sidebarLicense: '라이선스',
     sidebarMain: '메인 사이트',
     outlineTitle: '이 페이지 목차',
     sidebarMenuLabel: '메뉴',
@@ -161,7 +187,9 @@ const labels: Record<string, Labels> = {
 function themeFor(code: string): DefaultTheme.Config {
   const L = labels[code] ?? labels[DEFAULT_LANG]
   const home = routePath('/', code)
-  const video = routePath('/video-platform', code)
+  const readme = contentPath('/README', code)
+  const video = contentPath('/video-platform', code)
+  const license = contentPath('/LICENSE', code)
   return {
     // 页头/页脚由 fork 的 Limooo 组件渲染（与主站 base.html 一致）
     // 页头就是主站那三个入口（跟 limooo.cn 完全一致），文档自己的导航在侧栏
@@ -175,7 +203,9 @@ function themeFor(code: string): DefaultTheme.Config {
         text: L.docsSection,
         items: [
           { text: L.sidebarHome, link: home },
+          { text: L.sidebarReadme, link: readme },
           { text: L.sidebarVideo, link: video },
+          { text: L.sidebarLicense, link: license },
           { text: L.sidebarMain, link: MAIN_SITE }
         ]
       }

@@ -1,3 +1,9 @@
+---
+aside: false
+title: Project README
+description: "The Limooo website and admin system (fully serverless on Cloudflare) - project README"
+---
+
 # Limooo
 
 A fully serverless personal website and admin system running at [limooo.cn](https://limooo.cn). Public pages, the human-verification gate, the visitor panel, the Apple Account manager, monitoring and the status page all run on Cloudflare (Pages Functions, Workers, D1, R2).
@@ -262,7 +268,7 @@ bash ops/docs_deploy.sh --dev          # local VitePress dev server
 
 ## Whitelist
 
-Trusted sources are maintained in [`data/whitelist.txt`](data/whitelist.txt), one entry per line:
+Trusted sources are maintained in [`data/whitelist.txt`](https://github.com/Limooooo-Studio/Limooo-Website/blob/main/data/whitelist.txt), one entry per line:
 
 | Entry | Effect |
 | --- | --- |
@@ -452,4 +458,4 @@ Production state (2026-09-26):
 
 ## License
 
-[GNU AGPL v3.0](LICENSE.md)|[GNU AGPL v3.0-简体中文](LICENSE_zh_CN.md)|[GNU AGPL v3.0-日本語](LICENSE_ja_JP.md)|[GNU AGPL v3.0-한국어](LICENSE_ko_KR.md)
+[GNU AGPL v3.0](https://github.com/Limooooo-Studio/Limooo-Website/blob/main/LICENSE.md)|[GNU AGPL v3.0 (Simplified Chinese)](https://github.com/Limooooo-Studio/Limooo-Website/blob/main/LICENSE_zh_CN.md)|[GNU AGPL v3.0 (Japanese)](https://github.com/Limooooo-Studio/Limooo-Website/blob/main/LICENSE_ja_JP.md)|[GNU AGPL v3.0 (Korean)](https://github.com/Limooooo-Studio/Limooo-Website/blob/main/LICENSE_ko_KR.md)

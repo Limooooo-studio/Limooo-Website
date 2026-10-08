@@ -5,10 +5,12 @@
  *   user_lang_preference = zh-cn | en-us | ja-jp | ko-kr   Domain=.limooo.cn
  *   limooo_theme         = light | dark                     Domain=.limooo.cn
  *
- * 语言 URL 约定：语言码是页面路径的**最后一段**，默认语言（zh-cn）无后缀。
- *   /video-platform            zh-cn
+ * 语言 URL 约定：语言码是页面路径的**最后一段**，内容页一律显式带上（含默认
+ * 语言 zh-cn），无后缀路径由 _redirects 302 到 /.../zh-cn：
+ *   /video-platform/zh-cn      zh-cn（/video-platform 302 到这里）
  *   /video-platform/en-us      en-us
- *   /en-us                     首页的 en-us 版本
+ *   /README/zh-cn              README 页
+ *   /en-us                     首页的 en-us 版本（首页没有 /zh-cn，`/` 就是 zh-cn）
  *
  * 这里做三件事：
  *   1. 读主站主题 cookie → 首次访问时喂给 VitePress appearance；
@@ -83,8 +85,9 @@ export function pathForLang(path: string, lang: string): string {
   const segments = pathSegments(path)
   if (hasLangSuffix(path)) segments.pop()
   const base = segments.length ? '/' + segments.join('/') : '/'
-  if (lang === DEFAULT_LANG) return base
-  return `${base === '/' ? '' : base}/${lang}`
+  // 首页是唯一例外：`/` 就是 zh-cn；内容页的默认语言也要带 /zh-cn 后缀
+  if (base === '/') return lang === DEFAULT_LANG ? '/' : `/${lang}`
+  return `${base}/${lang}`
 }
 
 export function isValidLang(value: string | null): value is string {
