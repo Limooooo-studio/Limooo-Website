@@ -169,7 +169,7 @@ if [ "$DO_COMMIT" = 1 ]; then
             echo "Git: nothing to commit"
         else
             echo "Git: committing"
-            # 列出本次提交涉及的文件（两空格缩进，见 AGENTS.md 的输出约定）
+            # 列出的文件名与上一行 "committing" 的首字符对齐（"Git: " 占 5 列）
             staged_files="$(git diff --cached --name-only)"
             staged_total=0
             [ -n "$staged_files" ] && staged_total="$(printf '%s\n' "$staged_files" | wc -l | tr -d ' ')"
@@ -177,11 +177,11 @@ if [ "$DO_COMMIT" = 1 ]; then
             while IFS= read -r path; do
                 [ -z "$path" ] && continue
                 [ "$staged_shown" -ge "$GIT_FILE_LIST_LIMIT" ] && break
-                echo "  $path"
+                echo "     $path"
                 staged_shown=$((staged_shown + 1))
             done <<< "$staged_files"
             if [ "$staged_total" -gt "$staged_shown" ]; then
-                echo "  ... and $((staged_total - staged_shown)) more"
+                echo "     ... and $((staged_total - staged_shown)) more"
             fi
             show_cmd git commit -m "deploy: auto-commit <timestamp>"
             git commit -m "deploy: auto-commit $(date '+%Y-%m-%d %H:%M')" >/dev/null
