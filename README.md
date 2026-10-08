@@ -379,10 +379,11 @@ next deploy, with no template or locale edit. The two can never disagree. Any
 other value (e.g. `maybe`) fails the build rather than silently guessing.
 
 **`价格` may be `N/A`** (also `n/a` / `NA` / `n.a.`, trimmed and
-case-insensitive): the tier renders a bare `N/A` — no `CNY` prefix and no unit
-suffix — for tiers whose price is not published yet. `N/A` is "no number", not
-"free", so it is never treated as `0`; mixing `N/A` and numeric rows in one
-file is fine.
+case-insensitive) for tiers whose price is not published yet: the card keeps the
+`CNY` prefix and the unit suffix and only the number becomes `-` (`CNY - / 张`),
+so the layout stays identical to the numeric tiers. `N/A` is "no number", not
+"free", so it is never treated as `0`; mixing `N/A` and numeric rows in one file
+is fine.
 
 The rest of the contract is:
 

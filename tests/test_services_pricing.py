@@ -277,8 +277,8 @@ def test_price_accepts_na(services_dir, literal):
     ]
 
 
-def test_na_price_renders_without_cny_or_unit(services_dir):
-    """N/A 渲染成裸 N/A：不带 CNY 前缀、也不带单位后缀；同页其他档位照旧。"""
+def test_na_price_renders_as_dash(services_dir):
+    """N/A 只把数字换成 '-'：CNY 前缀与单位后缀留在原位，同页其他档位照旧。"""
     _write(services_dir, CONVENTION_CSV, "张数,价格\n1,N/A\n3,55\n6,100\n9,150\n")
     _write(
         services_dir,
@@ -288,8 +288,11 @@ def test_na_price_renders_without_cny_or_unit(services_dir):
 
     html = build.render_page(RENDER_APP, "services.html", "/services", "zh-cn")
 
-    assert '<span class="price-num">N/A</span>' in html
-    assert "CNY N/A" not in html
+    # 场照带单位后缀（/ 张），正片带 / 小时；前缀都不省
+    assert '<span class="price-num">CNY -<span class="plan-unit" data-i18n="unit_per_shot">' in html
+    assert '<span class="price-num">CNY -<span class="plan-unit" data-i18n="unit_per_hour">' in html
+    assert "N/A" not in html
+    assert "CNY None" not in html
     assert re.findall(r'<span class="price-num">CNY (\d+)', html) == [
         "55",
         "100",
@@ -311,6 +314,6 @@ def test_services_page_matches_committed_csv():
     assert shots == sorted(shots) and len(set(shots)) == len(shots)
 
     html = build.render_page(RENDER_APP, "services.html", "/services", "zh-cn")
-    # 每个档位都必须渲染出一个价格格（数值或 N/A），数量跟 CSV 对齐
+    # 每个档位都必须渲染出一个价格格（数字或 '-'），数量跟 CSV 对齐
     assert html.count('<span class="price-num">') == len(pricing["convention"]) + 4
     assert "None" not in html

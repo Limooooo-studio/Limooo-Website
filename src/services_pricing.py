@@ -31,7 +31,8 @@
 构建失败严重得多。
 
 价格列允许写 ``N/A``（也接受 ``n/a`` / ``NA``，大小写与首尾空格不敏感），
-表示该档位价格暂不公开；卡片渲染成 ``N/A``，不带 ``CNY`` 前缀也不带单位后缀。
+表示该档位价格暂不公开；卡片上只把数字换成 ``-``，``CNY`` 前缀与单位后缀都
+留在原位（``CNY - / 张``），版式与其他档位完全一致。
 注意 ``N/A`` 是「没有数字」，不是「免费」，所以它不会被当成 0。
 
 用法：
@@ -85,7 +86,7 @@ BOOKABLE_YES = {"", "是", "y", "yes", "true", "1"}
 BOOKABLE_NO = {"否", "n", "no", "false", "0"}
 
 # 「价格」列允许的 N/A 写法（比较前先 lower + strip）：价格暂不公开。
-# 渲染成裸 N/A —— 不加 CNY 前缀，也不加单位后缀（「N/A / 张」没有意义）。
+# 模板只把数字替换成「-」，CNY 前缀与单位后缀照旧。
 PRICE_NA_VALUES = {"n/a", "na", "n.a."}
 
 # 「说明」栏里按类型汇总的那一行：CSV 的类型列 → （说明栏标题键，暂停文案键）
@@ -114,7 +115,7 @@ def _read_rows(filename: str) -> list[dict[str, str]]:
 def _parse_price(filename: str, lineno: int, raw: str) -> int | None:
     """价格列 → 正整数；N/A（暂不公开）→ None。
 
-    None 只是「没有数字」，不是 0、也不是免费，模板据此渲染裸 N/A。
+    None 只是「没有数字」，不是 0、也不是免费，模板据此把数字渲染成「-」。
     """
     text = raw.strip()
     if text.lower() in PRICE_NA_VALUES:
