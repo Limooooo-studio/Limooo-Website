@@ -27,13 +27,12 @@
 
 对应的说明文案（单位后缀、档位标签、注意事项）仍然走 locales/*.json，
 只有「数字」「档位组合」与「是否接单」来自 CSV。CSV 缺失、表头不对、
-价格既不是正整数也不是 N/A、是否接单取值非法时构建直接失败——价目表出错比
-构建失败严重得多。
+档位无法识别/重复、是否接单取值非法时构建直接失败——价目表出错比构建失败严重得多。
 
-价格列允许写 ``N/A``（也接受 ``n/a`` / ``NA``，大小写与首尾空格不敏感），
-表示该档位价格暂不公开；卡片上只把数字换成 ``-``，``CNY`` 前缀与单位后缀都
-留在原位（``CNY - / 张``），版式与其他档位完全一致。
-注意 ``N/A`` 是「没有数字」，不是「免费」，所以它不会被当成 0。
+价格列只有两种结果：**正整数**，或 **None**（渲染成 ``-``）。凡是解析不出正整数的
+一律当作「价格暂不公开」——留空、``N/A``、``待定``、写错的数字、``0``、负数都一样；
+卡片保留 ``CNY`` 前缀与单位后缀，只把数字换成 ``-``（``CNY - / 张``），
+版式与其他档位完全一致。``-`` 不是 0，也不是免费。
 
 用法：
     from services_pricing import load_pricing
@@ -85,10 +84,7 @@ BOOKABLE_COLUMN = "是否接单"
 BOOKABLE_YES = {"", "是", "y", "yes", "true", "1"}
 BOOKABLE_NO = {"否", "n", "no", "false", "0"}
 
-# 「价格」列允许的 N/A 写法（比较前先 lower + strip）：价格暂不公开。
-# 模板只把数字替换成「-」，CNY 前缀与单位后缀照旧。
-PRICE_NA_VALUES = {"n/a", "na", "n.a."}
-
+# 「价格」列没有白名单：解析不出正整数就是「暂不公开」，模板渲染成「-」。
 # 「说明」栏里按类型汇总的那一行：CSV 的类型列 → （说明栏标题键，暂停文案键）
 NOTE_ROW_KEYS = {
     "棚拍": ("extra_studio", "studio_paused"),
@@ -112,23 +108,18 @@ def _read_rows(filename: str) -> list[dict[str, str]]:
     return rows
 
 
-def _parse_price(filename: str, lineno: int, raw: str) -> int | None:
-    """价格列 → 正整数；N/A（暂不公开）→ None。
+def _parse_price(raw: str) -> int | None:
+    """价格列 → 正整数；解析不出正整数的一律 → None。
 
-    None 只是「没有数字」，不是 0、也不是免费，模板据此把数字渲染成「-」。
+    没有白名单：留空、``N/A``、``待定``、写错的数字、``0``、负数都是 None，
+    模板据此把数字渲染成「-」。None 不是 0，也不是免费。
     """
     text = raw.strip()
-    if text.lower() in PRICE_NA_VALUES:
-        return None
     try:
         price = int(text)
-    except ValueError as exc:
-        raise RuntimeError(
-            f"{filename} 第 {lineno} 行价格不是整数或 N/A: {raw!r}"
-        ) from exc
-    if price <= 0:
-        raise RuntimeError(f"{filename} 第 {lineno} 行价格必须为正数: {raw!r}")
-    return price
+    except ValueError:
+        return None
+    return price if price > 0 else None
 
 
 def _parse_bookable(filename: str, lineno: int, row: dict[str, str]) -> bool:
@@ -168,12 +159,13 @@ def load_convention() -> list[dict[str, object]]:
             raise RuntimeError(f"{filename} 第 {index} 行张数重复: {shots}")
         seen.add(shots)
         bookable = _parse_bookable(filename, index, row)
-        price = _parse_price(filename, index, row["价格"])
+        price = _parse_price(row["价格"])
         plans.append(
             {
                 "shots": shots,
                 "price": price,
-                "price_na": price is None,
+                # 没有价格 → 模板把数字渲染成「-」（CNY 前缀与单位后缀保留）
+                "no_price": price is None,
                 "unit_key": CONVENTION_UNIT_KEYS.get(shots),
                 "bookable": bookable,
                 "strikethrough": not bookable,
@@ -203,10 +195,10 @@ def load_outdoor() -> dict[tuple[str, str], dict[str, object]]:
             )
         if key in plans:
             raise RuntimeError(f"{filename} 第 {index} 行档位重复: {key[0]}/{key[1]}")
-        price = _parse_price(filename, index, row["价格"])
+        price = _parse_price(row["价格"])
         plans[key] = {
             "price": price,
-            "price_na": price is None,
+            "no_price": price is None,
             "bookable": _parse_bookable(filename, index, row),
         }
 
@@ -240,7 +232,7 @@ def load_pricing() -> dict[str, object]:
         {
             "plan_key": OUTDOOR_PLAN_KEYS[key],
             "price": outdoor_plans[key]["price"],
-            "price_na": outdoor_plans[key]["price_na"],
+            "no_price": outdoor_plans[key]["no_price"],
             # 「是否接单」为「否」的档位加删除线（来自 CSV，不再写死）
             "strikethrough": not outdoor_plans[key]["bookable"],
         }

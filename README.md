@@ -372,12 +372,12 @@ So "temporarily not booking" is data end to end: flip 棚拍 from `否` to `是`
 next deploy, with no template or locale edit. The two can never disagree. Any
 other value (e.g. `maybe`) fails the build rather than silently guessing.
 
-**`价格` may be `N/A`** (also `n/a` / `NA` / `n.a.`, trimmed and
-case-insensitive) for tiers whose price is not published yet: the card keeps the
-`CNY` prefix and the unit suffix and only the number becomes `-` (`CNY - / 张`),
-so the layout stays identical to the numeric tiers. `N/A` is "no number", not
-"free", so it is never treated as `0`; mixing `N/A` and numeric rows in one file
-is fine.
+**A `价格` cell that is not a positive integer renders as `-`.** There is no
+placeholder whitelist: empty, `N/A`, `待定`, a typo (`1OO`), `0` and negative
+numbers all mean "price not published". The card keeps the `CNY` prefix and the
+unit suffix and only the number becomes `-` (`CNY - / 张`), so the layout stays
+identical to the numeric tiers. `-` is not `0` and not "free"; mixing such cells
+with numeric rows in one file is fine.
 
 The rest of the contract is:
 
@@ -388,9 +388,10 @@ The rest of the contract is:
 - outdoor rows must cover all four `类型/人数` combinations; they render in a
   fixed order (studio solo/duo, then outdoor solo/duo) regardless of row order
 
-A missing file, wrong column, a price that is neither a positive integer nor
-`N/A`, duplicate tier, unknown tier or unrecognized `是否接单` value **fails the
-build** — a wrong price list is worse than a failed build.
+A missing file, wrong column, duplicate tier, unknown tier or unrecognized
+`是否接单` value **fails the build** — a wrong price list is worse than a failed
+build. The price cell alone never fails the build: anything that is not a
+positive integer renders as `-`.
 `tests/test_services_pricing.py` covers all of these cases plus a round-trip
 check against the committed CSVs.
 

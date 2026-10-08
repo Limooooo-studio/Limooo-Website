@@ -196,8 +196,6 @@ def test_invalid_bookable_value_fails_the_build(services_dir):
     "convention,outdoor,message",
     [
         ("张数,价格\n1,20\n3,55\n6,100\n9,150\n", "类型,人数,价格\n棚拍,单人,100\n", "缺少档位"),
-        ("张数,价格\n1,20\n3,55\n6,100\n9,0\n", None, "价格必须为正数"),
-        ("张数,价格\n1,20\n3,55\n6,100\n9,abc\n", None, "价格不是整数"),
         ("张数\n1\n3\n6\n9\n", None, "缺少列"),
     ],
 )
@@ -247,9 +245,12 @@ def test_services_page_renders_csv_prices(services_dir):
     assert html.count('class="plan-price strikethrough"') == 2
 
 
-@pytest.mark.parametrize("literal", ["N/A", "n/a", "NA", " N/A "])
-def test_price_accepts_na(services_dir, literal):
-    """价格列允许 N/A（大小写/空格不敏感）→ price=None + price_na=True，不再让构建失败。"""
+@pytest.mark.parametrize(
+    "literal",
+    ["N/A", "n/a", "NA", " N/A ", "待定", "", "1OO", "0", "-5", "12.5"],
+)
+def test_non_positive_integer_price_renders_dash(services_dir, literal):
+    """价格没有白名单：解析不出正整数（N/A / 留空 / 写错 / 0 / 负数）→ no_price，构建照常通过。"""
     _write(
         services_dir,
         CONVENTION_CSV,
@@ -265,11 +266,11 @@ def test_price_accepts_na(services_dir, literal):
     pricing = load_pricing()
 
     assert pricing["convention"][0]["price"] is None
-    assert pricing["convention"][0]["price_na"] is True
-    assert pricing["convention"][1]["price_na"] is False
+    assert pricing["convention"][0]["no_price"] is True
+    assert pricing["convention"][1]["no_price"] is False
     assert pricing["outdoor"][0]["price"] is None
-    assert pricing["outdoor"][0]["price_na"] is True
-    assert [plan["price_na"] for plan in pricing["outdoor"]] == [
+    assert pricing["outdoor"][0]["no_price"] is True
+    assert [plan["no_price"] for plan in pricing["outdoor"]] == [
         True,
         False,
         False,
@@ -277,21 +278,27 @@ def test_price_accepts_na(services_dir, literal):
     ]
 
 
-def test_na_price_renders_as_dash(services_dir):
-    """N/A 只把数字换成 '-'：CNY 前缀与单位后缀留在原位，同页其他档位照旧。"""
+def test_no_price_renders_as_dash(services_dir):
+    """没有价格只把数字换成 '-'：CNY 前缀与单位后缀留在原位，同页其他档位照旧。"""
     _write(services_dir, CONVENTION_CSV, "张数,价格\n1,N/A\n3,55\n6,100\n9,150\n")
     _write(
         services_dir,
         OUTDOOR_CSV,
-        "类型,人数,价格\n棚拍,单人,N/A\n棚拍,双人,150\n外景,单人,120\n外景,双人,180\n",
+        "类型,人数,价格\n棚拍,单人,待定\n棚拍,双人,150\n外景,单人,120\n外景,双人,0\n",
     )
 
     html = build.render_page(RENDER_APP, "services.html", "/services", "zh-cn")
 
     # 场照带单位后缀（/ 张），正片带 / 小时；前缀都不省
     assert '<span class="price-num">CNY -<span class="plan-unit" data-i18n="unit_per_shot">' in html
-    assert '<span class="price-num">CNY -<span class="plan-unit" data-i18n="unit_per_hour">' in html
+    assert (
+        html.count(
+            '<span class="price-num">CNY -<span class="plan-unit" data-i18n="unit_per_hour">'
+        )
+        == 2
+    )
     assert "N/A" not in html
+    assert "待定" not in html
     assert "CNY None" not in html
     assert re.findall(r'<span class="price-num">CNY (\d+)', html) == [
         "55",
@@ -299,7 +306,6 @@ def test_na_price_renders_as_dash(services_dir):
         "150",
         "150",
         "120",
-        "180",
     ]
 
 
