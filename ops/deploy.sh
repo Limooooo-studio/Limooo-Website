@@ -168,22 +168,30 @@ if [ "$DO_COMMIT" = 1 ]; then
         if git diff --cached --quiet; then
             echo "Git: nothing to commit"
         else
-            # 文件名要先取：短 SHA 只有提交后才知道，所以先 commit，再打印这一块
-            staged_files="$(git diff --cached --name-only)"
+            # 文件名与状态要先取：短 SHA 只有提交后才知道，所以先 commit，再打印这一块
+            staged_status="$(git diff --cached --name-status)"
             staged_total=0
-            [ -n "$staged_files" ] && staged_total="$(printf '%s\n' "$staged_files" | wc -l | tr -d ' ')"
+            [ -n "$staged_status" ] && staged_total="$(printf '%s\n' "$staged_status" | wc -l | tr -d ' ')"
             show_cmd git commit -m "deploy: auto-commit <timestamp>"
             git commit -m "deploy: auto-commit $(date '+%Y-%m-%d %H:%M')" >/dev/null
             # 版本号 = 本次新提交的短 SHA
             echo "Git: committing $(git rev-parse --short HEAD)"
-            # 文件名与上一行 "committing" 的首字符对齐（"Git: " 占 5 列）
+            # 状态标记（新增 +、删除 -、修改/重命名先 + 再 -）右对齐到 "Git: " 里那个
+            # 空格所在列（第 5 列），文件名仍与上一行 "committing" 的首字符对齐（第 6 列）。
             staged_shown=0
-            while IFS= read -r path; do
-                [ -z "$path" ] && continue
+            while IFS="$(printf '\t')" read -r st path_old path_new; do
+                [ -z "$st" ] && continue
                 [ "$staged_shown" -ge "$GIT_FILE_LIST_LIMIT" ] && break
-                echo "     $path"
+                case "$st" in
+                    A*) mark="    +" ;;
+                    D*) mark="    -" ;;
+                    *)  mark="   +-" ;;
+                esac
+                # git 对重命名/复制给出 "R100\told\tnew"，展示新路径
+                [ -n "$path_new" ] && path_old="$path_new"
+                echo "${mark}${path_old}"
                 staged_shown=$((staged_shown + 1))
-            done <<< "$staged_files"
+            done <<< "$staged_status"
             if [ "$staged_total" -gt "$staged_shown" ]; then
                 echo "     ... and $((staged_total - staged_shown)) more"
             fi
