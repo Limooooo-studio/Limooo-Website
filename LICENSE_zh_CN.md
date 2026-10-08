@@ -6,7 +6,7 @@ GNU Affero 通用公共许可证
 
 第 3 版，2007 年 11 月 19 日
 
-版权所有 (C) 2026-至今 Limooo <https://limooo.cn/>
+版权所有 (C) 2026-至今 Limooo Studio <https://limooo.cn/>
 
 允许任何人复制和分发本许可证文件的逐字副本，但不允许改动它。
 

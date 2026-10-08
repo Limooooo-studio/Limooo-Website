@@ -6,7 +6,7 @@ GNU Affero 일반 공중 사용 허가서
 
 제3판, 2007년 11월 19일
 
-저작권 (C) 2026-현재 Limooo <https://limooo.cn/>
+저작권 (C) 2026-현재 Limooo Studio <https://limooo.cn/>
 
 누구든지 이 라이선스 문서의 축어적 사본을 복제·배포할 수 있다. 단, 내용을 변경하는 것은 허용되지 않는다.
 

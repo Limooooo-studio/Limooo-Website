@@ -2,7 +2,7 @@ GNU AFFERO GENERAL PUBLIC LICENSE
 
 Version 3, 19 November 2007
 
-Copyright (C) 2026-Present Limooo <https://limooo.cn/>
+Copyright (C) 2026-Present Limooo Studio <https://limooo.cn/>
 
 Everyone is permitted to copy and distribute verbatim copies
 of this license document, but changing it is not allowed.
