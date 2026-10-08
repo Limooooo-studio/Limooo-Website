@@ -227,7 +227,9 @@ function themeFor(code: string): DefaultTheme.Config {
         { text: L.footerSource, link: REPO }
       ]
     },
-    limooo: { languages: LANGS }
+    // langSegmentAlways：内容页路径总是带语言段（含 zh-cn），
+    // fork 的语言浮层据此把「中文」指向 /README/zh-cn 而不是 /README（后者会 404）
+    limooo: { languages: LANGS, langSegmentAlways: true }
   } as DefaultTheme.Config
 }
 
