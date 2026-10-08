@@ -243,24 +243,31 @@ export CI=1 WRANGLER_SEND_METRICS=false
 
 # ── ⑦ 冒烟 ──────────────────────────────────────────────────────────
 echo "[docs] post-deploy check"
-# 无后缀的内容页路径必须 302 到对应的 /<page>/zh-cn
-for path in /video-platform /README /LICENSE; do
-    code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 "https://${DOCS_HOST}${path}" || echo 000)"
-    if [ "$code" != "302" ]; then
-        echo "FATAL: https://${DOCS_HOST}${path} = ${code} (expected 302 to ${path}/zh-cn)" >&2
+# 自定义域刚部署完可能还指向上一个部署（2026-10-08 踩过：新部署已生效，
+# 但首次探测拿到的还是旧产物），所以每次探测都重试几轮。
+check_code() {
+    local path="$1" expected="$2" code=""
+    local i
+    for i in 1 2 3 4 5 6; do
+        code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 "https://${DOCS_HOST}${path}" || echo 000)"
+        [ "$code" = "$expected" ] && break
+        sleep 10
+    done
+    if [ "$code" != "$expected" ]; then
+        echo "FATAL: https://${DOCS_HOST}${path} = ${code} (expected ${expected})" >&2
         exit 1
     fi
-    echo "[docs] ${path} = 302 OK"
+    echo "[docs] ${path} = ${expected} OK"
+}
+
+# 无后缀的内容页路径必须 302 到对应的 /<page>/zh-cn
+for path in /video-platform /README /LICENSE; do
+    check_code "$path" 302
 done
 
 for path in / /video-platform/zh-cn /video-platform/en-us /video-platform/ja-jp /video-platform/ko-kr \
     /README/zh-cn /README/en-us /README/ja-jp /README/ko-kr \
     /LICENSE/zh-cn /LICENSE/en-us /LICENSE/ja-jp /LICENSE/ko-kr; do
-    code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 "https://${DOCS_HOST}${path}" || echo 000)"
-    if [ "$code" != "200" ]; then
-        echo "FATAL: https://${DOCS_HOST}${path} = ${code} (expected 200)" >&2
-        exit 1
-    fi
-    echo "[docs] ${path} = 200 OK"
+    check_code "$path" 200
 done
 echo "[docs] done."
