@@ -176,8 +176,8 @@ if [ "$DO_COMMIT" = 1 ]; then
             git commit -m "deploy: auto-commit $(date '+%Y-%m-%d %H:%M')" >/dev/null
             # 版本号 = 本次新提交的短 SHA
             echo "Git: committing $(git rev-parse --short HEAD)"
-            # 状态字母取自 git --name-status（A 新增 / D 删除 / M 修改 / R 重命名...），
-            # 放在 "Git: " 里那个空格所在列（第 5 列），字母与文件名之间空一格。
+            # 状态字母取自 git --name-status（A 新增 / D 删除 / M 修改 / R 重命名...）占第 4 列，
+            # 第 5 列空一格，文件名仍与上一行 "committing" 的首字符对齐（第 6 列）。
             staged_shown=0
             while IFS="$(printf '\t')" read -r st path_old path_new; do
                 [ -z "$st" ] && continue
@@ -185,11 +185,11 @@ if [ "$DO_COMMIT" = 1 ]; then
                 status_letter="${st:0:1}"
                 # git 对重命名/复制给出 "R100\told\tnew"，展示新路径
                 [ -n "$path_new" ] && path_old="$path_new"
-                echo "    ${status_letter} ${path_old}"
+                echo "   ${status_letter} ${path_old}"
                 staged_shown=$((staged_shown + 1))
             done <<< "$staged_status"
             if [ "$staged_total" -gt "$staged_shown" ]; then
-                echo "      ... and $((staged_total - staged_shown)) more"
+                echo "     ... and $((staged_total - staged_shown)) more"
             fi
         fi
         # 刚提交的这棵树就是 ⓪ 里检查过的内容，pre-push hook 不必再跑一遍。
