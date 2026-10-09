@@ -767,10 +767,22 @@ def main() -> int:
         dirs_exist_ok=True,
         ignore=_static_ignore,
     )
-    generate_portfolio_thumbs(
-        os.path.join(PREVIEW_DIR, "static", "portfolio"),
-        os.path.join(PREVIEW_DIR, "static", "portfolio", "thumbs"),
-    )
+    # 预览目录直接复用 public/ 已生成的缩略图（同一批源图、同一套参数），
+    # 避免同一次构建把 18 张缩略图重新编码一遍（webp + avif 共 36 个文件）。
+    _preview_thumbs = os.path.join(PREVIEW_DIR, "static", "portfolio", "thumbs")
+    _public_thumbs = os.path.join(PUBLIC_DIR, "static", "portfolio", "thumbs")
+    if os.path.isdir(_public_thumbs):
+        shutil.copytree(_public_thumbs, _preview_thumbs, dirs_exist_ok=True)
+        print(
+            "[build] preview thumbnails reused: "
+            f"{len(os.listdir(_preview_thumbs))} files",
+            flush=True,
+        )
+    else:
+        generate_portfolio_thumbs(
+            os.path.join(STATIC_DIR, "portfolio"),
+            _preview_thumbs,
+        )
     PREVIEW_LANG = "zh-cn"
     src = os.path.join(PUBLIC_DIR, PREVIEW_LANG)
     for name in os.listdir(src):
