@@ -126,7 +126,7 @@ run_step() {
 }
 
 if [ "$DRY_RUN" = 1 ]; then
-    echo "Deploy start (dry-run)"
+    echo "Deploy: start (dry-run)"
     [ "$DO_COMMIT" = 1 ] && echo "  would-run: git add -A && git commit"
     [ "$DO_PUSH" = 1 ] && echo "  would-run: git push origin main"
     { [ "$DO_COMMIT" = 1 ] || [ "$DO_PUSH" = 1 ]; } && echo "  would-run: bash ops/ci_check.sh"
@@ -137,7 +137,7 @@ if [ "$DRY_RUN" = 1 ]; then
     exit 0
 fi
 
-echo "Deploy start"
+echo "Deploy: start"
 
 # ── ⓪ 本地 CI 复刻（必须先于 commit / push）──────────────────────────
 # 历史教训：CI 是「先 build 再 typecheck / 测试」，而本地只跑过 vitest/pytest，
@@ -175,9 +175,9 @@ if [ "$DO_COMMIT" = 1 ]; then
             show_cmd git commit -m "deploy: auto-commit <timestamp>"
             git commit -m "deploy: auto-commit $(date '+%Y-%m-%d %H:%M')" >/dev/null
             # 版本号 = 本次新提交的短 SHA
-            echo "Git: committing $(git rev-parse --short HEAD)"
+            echo "Git: committed $(git rev-parse --short HEAD)"
             # 状态字母取自 git --name-status（A 新增 / D 删除 / M 修改 / R 重命名...）占第 4 列，
-            # 第 5 列空一格，文件名仍与上一行 "committing" 的首字符对齐（第 6 列）。
+            # 第 5 列空一格，文件名仍与上一行 "committed" 的首字符对齐（第 6 列）。
             staged_shown=0
             while IFS="$(printf '\t')" read -r st path_old path_new; do
                 [ -z "$st" ] && continue
@@ -211,7 +211,7 @@ if [ "$DO_PUSH" = 1 ]; then
         elif git merge-base --is-ancestor "$REMOTE_HEAD" "$LOCAL_HEAD"; then
             show_cmd git push origin main
             if git push origin main >/dev/null 2>&1; then
-                echo "Git: Push to GitHub"
+                echo "Git: pushed to GitHub"
             else
                 echo "Warning: git push failed, continuing deploy" >&2
             fi
