@@ -13,7 +13,7 @@ are **not** written here; they come from the sources listed below.
 | Worker: probes / status page | `limooo-status` | `ops/status-worker/wrangler.toml` | Probes every minute + 10 s re-check after down; `status.limooo.cn`; D1 retention **and the daily checks** (run history + blocklist invariant) daily at 03:47 |
 | Worker: blocklist sync | `limooo-blocklist-sync` | `ops/sync-worker/wrangler.toml` | Daily 03:30, D1 active rows -> Cloudflare IP List; run history + `GET /?health=1` (see "Blocklist chain") |
 | Worker: image watermark | `image-watermark` | `ops/image-watermark/wrangler.toml` | `image.limooo.cn/*` normalising proxy, `/portfolio/*` always returns the watermark (A2) |
-| Worker: D1 archive | `limooo-d1-archive` | `ops/d1-archive/wrangler.toml` | Daily 00:00 archive of the previous UTC day into `limooo-analytics`; run history + `GET /?health=1` (see "Worker run history") |
+| Worker: D1 archive | `limooo-d1-archive` | `ops/d1-archive/wrangler.toml` | Daily 00:00: archive of the previous UTC day into `limooo-analytics/` **plus** the configuration/schema snapshot into `backup/`; run history + `GET /?health=1` (see "Worker run history" and "Disaster-recovery snapshot") |
 | R2 private bucket (originals) | `limooo-originals` | `ops/upload_originals.sh` | After A2 the portfolio originals live only locally + in this private bucket, never in Pages |
 | R2 bucket (fonts) | `limooo-fonts` | `ops/fonts/README.md` | Public gate-font subset at `fonts.limooo.cn` |
 | WAF IP List | `limooo_blocklist` | `ops/sync-worker` | Cloudflare List, referenced by WAF rules |
@@ -151,10 +151,10 @@ that gap:
 
 | column | meaning |
 | --- | --- |
-| `job` | `blocklist_sync` / `d1_archive` (cron Workers) or `blocklist_sync_check` (`ops/check_blocklist_sync.py --record`) |
+| `job` | `blocklist_sync` / `d1_archive` / `config_backup` (cron Workers) or `blocklist_sync_check` (`ops/check_blocklist_sync.py --record`). `d1_archive` and `config_backup` are the two stages of the same cron run and are recorded separately on purpose: `?health=1` reports one row per job, so "the archive is fine" cannot hide "the snapshot has been failing for a week" |
 | `started_at` / `finished_at` | UTC epoch seconds; `finished_at` is NULL while a run is in flight |
 | `outcome` | `running`, `ok`, `skipped` (no credentials), or `failed` |
-| `added` / `removed` | Delta of that run (`added` also carries the row total for `d1_archive`) |
+| `added` / `removed` | Delta of that run. `d1_archive` puts the archived row total in `added`; `config_backup` puts the **measured D1 rows read** in `added` (its cost) and the number of R2 objects deleted by rotation in `removed` |
 | `error` | Failure text, verbatim |
 | `dry_run` | 1 = the run only computed the diff and sent no write request (`?dry-run=1`); 0 = a real sync. Added by `019_worker_runs_dry_run.sql`, because otherwise a rehearsal is indistinguishable from a sync that really ran -- the exact question this table exists to answer |
 
@@ -190,16 +190,181 @@ curl -H "Authorization: Bearer $SYNC_TOKEN" \
   'https://limooo-d1-archive.limooo.workers.dev/?health=1'
 ```
 
-Both return `{ ok, job, lastRun }`. `GET /` on the sync Worker still triggers a sync
+Both return `{ ok, job, lastRun }`; the archive Worker also returns
+`backup: { job: "config_backup", lastRun }`, because both stages of its cron need to be
+visible from one call. `GET /` on the sync Worker still triggers a sync
 and keeps its original `{ ok, toAdd, toRemove }` shape (the `.zshrc` helper
 `_limooo_sync_cf` depends on it); `?dry-run=1` is unchanged. The archive Worker
 answers 404 for anything except `?health=1` -- it exists only so a failure becomes
 visible, never to be triggered over HTTP.
 
+## Disaster-recovery snapshot (`backup/`)
+
+Until 2026-10-11 the same D1 database had only two automatic paths: this Worker's
+`analytics/YYYY_MM_DD/` archive (four analytics tables, previous UTC day) and the
+retention job in `ops/status-worker`. **Neither covered a single configuration table**, so
+a full-database loss would have taken `blocked_ips` (the authoritative block list),
+`apple_accounts`, `auth_credentials`, `schema_version` (migration bookkeeping) and every
+`CREATE TABLE` with it. The only other route was a hand-run export, and the newest of
+those was 2026-09-26 -- a manual path nobody runs is not a path.
+
+The daily 00:00 cron therefore has a **second stage**. It is deliberately a separate
+`worker_runs` job (`config_backup`, not a re-labelled `d1_archive`), because
+`GET /?health=1` reports one row per job: a shared job value would let "the archive is
+fine" hide "the snapshot has been failing for a week".
+
+### What it writes
+
+One prefix per UTC **run** day (not per data day):
+
+```
+backup/2026_10_10/ddl.sql               replayable skeleton: every CREATE TABLE / INDEX
+backup/2026_10_10/schema.jsonl.gz       every sqlite_master row verbatim (lossless)
+backup/2026_10_10/manifest.json         per-table row counts, byte sizes, gaps, restore hints
+backup/2026_10_10/<table>.jsonl.gz      one object per table below
+```
+
+12 objects per day. Measured on 2026-10-10: 12 objects / 22,867 bytes in total.
+
+Rows are JSONL -- one JSON object per line -- gzipped, values taken verbatim from D1's
+response objects. That is what keeps `active` an integer 0/1, keeps epoch timestamps
+integers, and keeps `NULL` distinguishable from `''`.
+
+`ddl.sql` is the *replayable* subset of `sqlite_master`: `sqlite_sequence` (a reserved
+name; SQLite creates it itself for `AUTOINCREMENT`) and `_cf_KV` (Cloudflare-managed;
+D1 rejects reads and writes with `SQLITE_AUTH`, code 7500) are left out but **listed in
+the file header**, and both are kept verbatim in `schema.jsonl.gz` so nothing is lost.
+
+### Tables in and out
+
+| Table | Rows (2026-10-10) | Why |
+| --- | --- | --- |
+| `schema_version` | 19 | `migrate_d1.sh` skips already-applied files by these rows |
+| `blocked_ips` | 83 | authoritative block list; `data/blocklist.txt` is only a snapshot of it |
+| `apple_accounts` | 5 | account records, copied verbatim, never decrypted |
+| `auth_credentials` | 1 | pbkdf2 hashes and lockouts, copied verbatim |
+| `probes` / `probe_state` | 3 / 3 | probe definitions and alert state |
+| `retention_state` | 5 | retention bookkeeping per bucket |
+| `blocklist_audit` | 192 | the rollback basis for every block/unblock |
+| `worker_runs` | 6 | whether the cron jobs actually ran |
+
+Total **321 data rows + 107 `sqlite_master` rows = 428 rows read per run**, measured from
+`meta.rows_read` (the sum is recorded as `d1_rows_read` in `manifest.json` and as `added`
+on the `config_backup` row of `worker_runs`). Against the 5,000,000 rows/day free-tier
+budget that is 0.009%, and it stays inside the "single-digit hundreds of rows" rule.
+
+Deliberately **not** read, with the reason recorded in `manifest.json` next to the data:
+
+- `visitors` (~13.9k rows) -- legacy VPS-era table with plaintext IPs; no code has read it
+  since the 2026-09-17 edge migration, and copying it would create a second store of
+  plaintext IPs.
+- `visitors_daily` (~11.3k rows) -- derived aggregate, rebuilt by
+  `ops/prune_d1.py --mode aggregate` from `visitors_v2` + `visitor_rollups`.
+- `visitor_rollups`, `visitors_v2`, `ray_log_v2`, `events` -- already archived daily into
+  `analytics/` by this same Worker.
+- `heartbeats`, `probe_uptime_daily`, `ray_log`, `gate_failures`, `auth_sessions`,
+  `_cf_KV` -- bulk telemetry, superseded tables, self-healing counters, re-loginable
+  sessions, and a platform-internal table.
+
+`visitors`, `visitors_daily` and `probe_uptime_daily` are the three places where this
+snapshot is knowingly not a full backup; each one is listed with its reason in
+`manifest.json`.
+
+Two of the included tables grow without bound (`worker_runs` by one row per Worker run,
+`blocklist_audit` by one row per block/unblock), so the daily read cost creeps upward.
+`d1_rows_read` is in every manifest, which makes the drift a number rather than a guess;
+if it ever approaches ~2,000, window those two tables instead of dropping the snapshot.
+
+### Retention: `backup/` rotates, `analytics/` does not
+
+At the end of a run the stage keeps the newest **14** `backup/YYYY_MM_DD/` prefixes and
+deletes older ones **as whole snapshots** -- never object by object, which could leave a
+`ddl.sql` with no rows beside it. Rotation is time-based rather than
+completeness-based: a day whose table failed still counts as a day, otherwise a
+permanently broken table would pin the bucket to unbounded growth. What that day actually
+contains is in its `manifest.json` and in the `failed` run record.
+
+`analytics/` is untouched by this, and structurally so:
+
+1. the directory listing is issued with `prefix: "backup/"`, so R2 cannot return an
+   `analytics/` prefix at all;
+2. every key is re-checked against `isBackupKey()` immediately before the delete call;
+3. only `backup/YYYY_MM_DD/`-shaped prefixes rotate, so anything hand-placed under
+   `backup/` (`backup/notes.txt`, `backup/manual/`) is never auto-deleted.
+
+`backup/` and `analytics/` also differ in meaning, not just in name:
+
+| | `analytics/YYYY_MM_DD/` | `backup/YYYY_MM_DD/` |
+| --- | --- | --- |
+| Day means | the UTC day the **data** belongs to (yesterday) | the UTC day the **snapshot** was taken (today) |
+| Content | 4 analytics tables, that day's rows only | DDL + 9 configuration/small tables, current state |
+| Retention | none in R2 (D1 prunes the source tables) | newest 14 prefixes, older ones deleted |
+| Purpose | investigate a day after the detail left D1 | rebuild the database |
+
+One deliberate difference in the object metadata: `analytics/` objects carry
+`contentEncoding: gzip`, and both the R2 REST API and `wrangler r2 object get` then
+**silently inflate** them on download (measured: a 624-byte object arrives as 1,290 bytes
+of plain JSONL under a `.jsonl.gz` name). `backup/` objects declare
+`contentType: application/gzip` with no `contentEncoding`, so the bytes that arrive are
+the bytes that were stored -- which is the only thing that makes a restore script work.
+
+### Restoring from a snapshot
+
+Replace `<database>` with `limooo` (or the D1 database name you are restoring into). The
+target should be a **fresh** database; the rendered SQL uses plain `INSERT`.
+
+```sh
+DAY=2026_10_10
+DEST=/tmp/limooo-restore-$DAY
+mkdir -p "$DEST"
+
+# 1. download the day (12 objects; the table names are the ones listed in the table above)
+for t in schema_version blocked_ips apple_accounts auth_credentials probes \
+         probe_state retention_state blocklist_audit worker_runs; do
+  wrangler r2 object get "limooo-analytics/backup/$DAY/$t.jsonl.gz" --remote --file "$DEST/$t.jsonl.gz"
+done
+wrangler r2 object get "limooo-analytics/backup/$DAY/ddl.sql"        --remote --file "$DEST/ddl.sql"
+wrangler r2 object get "limooo-analytics/backup/$DAY/schema.jsonl.gz" --remote --file "$DEST/schema.jsonl.gz"
+wrangler r2 object get "limooo-analytics/backup/$DAY/manifest.json"  --remote --file "$DEST/manifest.json"
+
+# 2. check what you got before touching anything (row counts, gaps, byte sizes)
+cat "$DEST/manifest.json"
+
+# 3. render DDL + INSERTs into one replayable file
+python3 ops/d1-archive/restore.py --dir "$DEST" --out "$DEST/restore.sql"
+
+# 4. apply it
+wrangler d1 execute <database> --remote --file "$DEST/restore.sql"
+
+# 5. verify
+wrangler d1 execute <database> --remote \
+  --command "SELECT COUNT(*) FROM blocked_ips; SELECT COUNT(*) FROM schema_version"
+```
+
+`restore.py` accepts gzip or already-inflated JSONL (it sniffs the gzip magic bytes),
+refuses to render a snapshot whose columns are inconsistent between lines, and reports
+any table object that is missing instead of quietly skipping it. To re-apply data on top
+of an existing database use `--data-only --replace`; to emit only INSERTs, `--data-only`.
+
+Because the snapshot only holds the tables listed above, a **full** point-in-time copy
+still needs `wrangler d1 export <database> --remote` before a risky migration (see
+"Migration and rollback"); the snapshot is what you have when nobody ran that.
+
+### Failure visibility
+
+The stage is a separate `worker_runs` job with the same structured single-line JSON log as
+the rest of the Worker: `{"event":"config_backup","job":"config_backup","outcome":"failed",...}`
+on `console.error`, searchable from `wrangler tail` and the Workers log panel. Both stages
+run inside their own `try`/`catch` in `scheduled()`: a snapshot failure never fails the
+archive, and an archive failure never skips the snapshot. One table failing does not
+discard the other eight -- it is recorded in `manifest.json`, in the run row and in the
+log, and rotation still runs so a bad table cannot pin the bucket.
+
 ## Migration and rollback
 
 1. Back up D1 before a change: `wrangler d1 export <database> --remote` (record it in
-   `docs/parallel-actions.md`).
+   `docs/parallel-actions.md`). For a schema/configuration-only rollback the daily
+   `backup/` snapshot above is usually enough and needs no manual step.
 2. Preview: `bash ops/migrate_d1.sh --dry-run`.
 3. Apply: `bash ops/migrate_d1.sh --remote`.
 4. Roll back: restore from the backup, then re-run `migrate_d1.sh --remote`. Applied

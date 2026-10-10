@@ -193,15 +193,32 @@ export function authorized(request: Request, env: Env): boolean {
   return diff === 0;
 }
 
-/** 只报健康状态（不触发归档）：最近一次运行记录 + 表不可用时的原因。 */
-export async function health(
-  env: Env,
-): Promise<{ ok: boolean; job: string; lastRun: RunRow | null; error?: string }> {
+/**
+ * 只报健康状态（不触发归档）：每个 job 最近一次运行记录 + 表不可用时的原因。
+ *
+ * 两个 job 都报：快照是同一个 cron 的第二个 stage，如果只报归档，那么
+ * 「归档好着呢」会掩盖「快照已经连着失败一周」—— 而这正是这个端点存在的理由。
+ * 每次多读 1 行（走 idx_worker_runs_job_started），且只由 HTTP 触发，不进热路径。
+ */
+export async function health(env: Env): Promise<{
+  ok: boolean;
+  job: string;
+  lastRun: RunRow | null;
+  backup: { job: string; lastRun: RunRow | null };
+  error?: string;
+}> {
   try {
-    return { ok: true, job: JOB, lastRun: await lastRun(env.DB, JOB) };
+    const archiveRun = await lastRun(env.DB, JOB);
+    const backupRun = await lastRun(env.DB, CONFIG_JOB);
+    return {
+      ok: true,
+      job: JOB,
+      lastRun: archiveRun,
+      backup: { job: CONFIG_JOB, lastRun: backupRun },
+    };
   } catch (error) {
     // 读不到运行记录不等于归档失败，如实区分：ok 仍为真，附上读失败原因。
-    return { ok: true, job: JOB, lastRun: null, error: String(error) };
+    return { ok: true, job: JOB, lastRun: null, backup: { job: CONFIG_JOB, lastRun: null }, error: String(error) };
   }
 }
 

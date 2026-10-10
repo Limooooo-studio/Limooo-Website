@@ -226,7 +226,9 @@ function r2Stub(initial: Record<string, string> = {}, leakKeys: string[] = []) {
         }
         return { objects: direct, delimitedPrefixes: [...dirs].sort(), truncated: false };
       }
-      const leaked = leakKeys.filter((key) => !objects.has(key));
+      // 原样返回：这是「坏绑定」的模拟，绝不能因为「这个键本来就在桶里」被过滤掉，
+      // 否则 isBackupKey() 那道闸就永远考不到（反向抽查当场抓到过这个洞）。
+      const leaked = leakKeys;
       return {
         objects: [
           ...matching.map((key) => ({ key, size: (objects.get(key) ?? "").length })),
@@ -654,6 +656,43 @@ describe("config backup runs inside the archive Worker", () => {
     expect(scheduledFailure).toMatchObject({ job: CONFIG_JOB, outcome: "failed" });
     // 归档那一步是成功的：只有配置快照失败。
     expect(lines.some((line) => line.job === JOB && line.outcome === "failed")).toBe(false);
+  });
+
+  it("reports the config_backup run on the same health endpoint as the archive", async () => {
+    // 健康端点按 job 各报一条：归档绿着而快照连着失败，必须一眼看得出来。
+    const rows: Record<string, Record<string, unknown>> = {
+      d1_archive: { id: 1, job: "d1_archive", outcome: "ok", started_at: 1791671264, finished_at: 1791671266, added: 576, removed: null, error: null, dry_run: 0 },
+      config_backup: { id: 2, job: CONFIG_JOB, outcome: "failed", started_at: 1791671266, finished_at: 1791671270, added: 428, removed: 0, error: "blocklist_audit: boom", dry_run: 0 },
+    };
+    // 只服务 lastRun(db, job)：按绑定进来的 job 返回各自最近一条。
+    const db = {
+      prepare: (sql: string) => {
+        expect(sql).toMatch(/FROM worker_runs/);
+        return {
+          bind: (job: string) => ({
+            all: async () => ({ results: rows[job] ? [{ ...rows[job] }] : [], success: true }),
+          }),
+          all: async () => ({ results: [], success: true }),
+          run: async () => ({ success: true }),
+        };
+      },
+    };
+    captureConsole();
+
+    const resp = await worker.fetch(
+      new Request("https://limooo-d1-archive.limooo.workers.dev/?health=1", {
+        headers: { Authorization: "Bearer s3cret-token" },
+      }),
+      { DB: db, ARCHIVE: r2Stub().bucket, SYNC_TOKEN: "s3cret-token" } as never,
+    );
+
+    expect(resp.status).toBe(200);
+    const body = await resp.json();
+    expect(body.job).toBe(JOB);
+    expect(body.lastRun).toMatchObject({ job: JOB, outcome: "ok" });
+    expect(body.backup.job).toBe(CONFIG_JOB);
+    expect(body.backup.lastRun).toMatchObject({ outcome: "failed", removed: 0 });
+    expect(body.backup.lastRun.error).toMatch(/blocklist_audit/);
   });
 
   it("keeps archiving even when the snapshot stage explodes mid-flight", async () => {
