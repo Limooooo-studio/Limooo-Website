@@ -28,7 +28,8 @@
       2. `visitor_rollups.ip_enc` 是 Fernet 密文（`VISITOR_IP_KEY`，本机有），
          能还原**明文 IP**，并带同一行的 `ip_hash`。
     所以链路是：明文 IP → 在所有 ip_enc 里找出匹配行 → 拿到 ip_hash
-    → 用 ip_hash 去 ray_log_v2 取最近 N 条 ray。
+    → 用 ip_hash 去 ray_log_v2 取最近 N 条 ray（迁移 017 起该表有
+    (ip_hash, ts DESC) 索引，这一步已从扫表变成精确取行）。
 
     `ray_log`（旧表）存的是明文 IP，可直接精确匹配，但 2026-09-25 起已停写，
     故仅作历史兜底。
@@ -159,7 +160,7 @@ def resolve_hashes(cfg: dict[str, str], env: dict[str, str], ip: str) -> tuple[l
 
 
 def rays_by_hash(cfg: dict[str, str], hashes: list[str], limit: int) -> tuple[list[dict], str | None]:
-    """按 ip_hash 从 ray_log_v2 取最近 limit 条。"""
+    """按 ip_hash 从 ray_log_v2 取最近 limit 条（走迁移 017 的 (ip_hash, ts DESC) 索引）。"""
     if not hashes:
         return [], None
     quoted = ", ".join("'" + h.replace("'", "''") + "'" for h in hashes)
@@ -257,8 +258,8 @@ def main() -> int:
             cfg,
             "ray_log_v2",
             "",
-            "no (ip_hash, ts DESC) index; the 7-day detail table is scanned",
-            "Pass --hash <ip_hash> to avoid the ip_enc scan, but ray_log_v2 stays a scan.",
+            "indexed by (ip_hash, ts DESC) since migration 017; only the matching hashes' rows are read",
+            "Pass --hash <ip_hash> to also skip the ip_enc scan on the plaintext-IP path.",
         )
     )
     rows, warn_msg = rays_by_hash(cfg, hashes, limit)

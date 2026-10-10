@@ -20,7 +20,40 @@
 /**
  * 每日 03:30 把 D1 里的 active blocked_ips 增量同步到 Cloudflare IP List
  * （原 auto_block.py 的 sync_cloudflare 移植；ipset/iptables 部分随迁移放弃）
+ *
+ * 失败可见性（2026-10-11 补）：此前 scheduled() 只写 `ctx.waitUntil(sync(env))`，
+ * 协程的 rejection 被 waitUntil 静默吞掉 —— cron 面板显示「已运行」，实际一条
+ * 都没写进去，且没有任何地方留下痕迹。现在：
+ *   1. 每次运行在 D1 worker_runs 落一行（成功/失败都落，失败带 error）；
+ *   2. scheduled() 显式 await + try/catch，失败打结构化单行 JSON 到 Workers 日志；
+ *   3. GET /?health=1 只报健康状态（不触发同步），返回 { ok, job, lastRun }。
+ * 三条都不参与热路径读：运行记录只写不读，健康端点才读。
  */
+
+import { insertRun, lastRun, runStartedAt, updateRun, type RunRow } from "./runlog";
+
+/**
+ * 结构化单行 JSON 运行日志（风格对齐 functions/_lib/logging.ts 的 logEvent：
+ * 一行一个完整 JSON、字段名可 grep）。
+ *
+ * 失败走 console.error、其余走 console.log：Cloudflare 日志面板与 `wrangler
+ * tail` 都能按级别筛，因此 `outcome:"failed"` 是**可检索**的 —— 这正是本次修
+ * 的核心（此前 waitUntil 把 rejection 吞掉，日志里连一行都没有）。
+ */
+function logRun(fields: Record<string, unknown> & { outcome?: string }): void {
+  const payload: { event: string; ts: number; job: string; outcome?: string } & Record<
+    string,
+    unknown
+  > = {
+    event: JOB,
+    ts: runStartedAt(),
+    job: JOB,
+    ...fields,
+  };
+  const line = JSON.stringify(payload);
+  if (payload.outcome === "failed") console.error(line);
+  else console.log(line);
+}
 
 interface D1Result<T> {
   results: T[];
@@ -30,6 +63,7 @@ interface D1Result<T> {
 interface D1PreparedStatement {
   bind(...values: unknown[]): D1PreparedStatement;
   all<T = Record<string, unknown>>(): Promise<D1Result<T>>;
+  run(): Promise<unknown>;
 }
 
 interface D1Database {
@@ -55,6 +89,9 @@ const MAX_ITEM_PAGES = 20;
 // bulk_operations 轮询：40 次 × 2s ≈ 80s，超时按失败处理（不再静默当成功）。
 const OPERATION_POLLS = 40;
 const OPERATION_POLL_MS = 2000;
+
+/** 运行记录里的任务名：与 ops/migrations/018_worker_runs.sql 的 job 列取值一致。 */
+export const JOB = "blocklist_sync";
 
 export interface SyncResult {
   toAdd: string[];
@@ -228,6 +265,53 @@ export async function sync(
 }
 
 /**
+ * scheduled / fetch 共用的入口：跑一次同步，并把这次运行写成 worker_runs 的一行。
+ *
+ * 与 sync() 的关键区别是**谁负责把失败记下来**。sync() 照旧只做同步并抛错，
+ * 由这里在最外层收口，保证「抛了」跟「记了」不会分家：
+ *   - 抛错  → outcome='failed' + error 文本，然后**继续往外抛**（日志仍可检索）；
+ *   - 成功  → outcome='ok' + 本次增量；
+ *   - 缺凭据提前返回 → outcome='skipped'（同步本身没跑，不是失败）。
+ *
+ * 运行记录写入失败只 console.error，绝不影响同步本身（fail-open，与
+ * functions/_lib/logging.ts 的写失败处理一致）；记录读的失败同理，由调用方兜。
+ */
+export async function runSync(
+  env: Env,
+  options: { dryRun?: boolean } = {},
+): Promise<SyncResult & { runId: number | null }> {
+  const startedAt = runStartedAt();
+  const runId = await insertRun(env.DB, JOB, startedAt);
+  const missingCredentials = !env.CLOUDFLARE_API_TOKEN || !env.CLOUDFLARE_ACCOUNT_ID;
+  logRun({ outcome: "started", dry_run: options.dryRun === true });
+  try {
+    const result = await sync(env, options);
+    const outcome = missingCredentials ? "skipped" : "ok";
+    await updateRun(env.DB, runId, {
+      finishedAt: runStartedAt(),
+      outcome,
+      added: result.toAdd.length,
+      removed: result.toRemove.length,
+    });
+    logRun({
+      outcome,
+      added: result.toAdd.length,
+      removed: result.toRemove.length,
+      duration_ms: runStartedAt() - startedAt,
+    });
+    return { ...result, runId };
+  } catch (error) {
+    await updateRun(env.DB, runId, {
+      finishedAt: runStartedAt(),
+      outcome: "failed",
+      error: String(error),
+    });
+    logRun({ outcome: "failed", error: String(error), duration_ms: runStartedAt() - startedAt });
+    throw error;
+  }
+}
+
+/**
  * 手动触发端点的鉴权：比对 Authorization: Bearer <SYNC_TOKEN>。
  *
  * 这个 worker 只在 *.workers.dev 上可达，而 workers.dev 不属于本账户，
@@ -253,23 +337,95 @@ export function authorized(request: Request, env: Env): boolean {
   return diff === 0;
 }
 
+/** 只报健康状态（不触发同步）：最近一次运行记录 + 表不可用时的原因。 */
+export async function health(env: Env): Promise<{ ok: boolean; job: string; lastRun: RunRow | null; error?: string }> {
+  try {
+    return { ok: true, job: JOB, lastRun: await lastRun(env.DB, JOB) };
+  } catch (error) {
+    // 读不到运行记录不等于同步失败，如实区分：ok 仍为真，附上读失败原因。
+    return { ok: true, job: JOB, lastRun: null, error: String(error) };
+  }
+}
+
 export default {
   async scheduled(
     _event: unknown,
     env: Env,
     ctx: { waitUntil(p: Promise<unknown>): void },
   ): Promise<void> {
-    ctx.waitUntil(sync(env));
+    // 必须显式 await 进一个 try/catch：`ctx.waitUntil(sync(env))` 会把 rejection
+    // 吞掉，cron 面板照样显示成功 —— 同步连续失败 20 天也无人发现（2026-10-11）。
+    const work = (async () => {
+      try {
+        const result = await runSync(env);
+        // runSync 已经打过一行 outcome='ok' 的结构化日志；这里只补一条 cron
+        // 语义的收尾行，让「cron 到底跑没跑完」在日志里也一眼可见。
+        logRun({
+          outcome: "scheduled_ok",
+          added: result.toAdd.length,
+          removed: result.toRemove.length,
+        });
+      } catch (error) {
+        console.error(
+          JSON.stringify({
+            event: "blocklist_sync",
+            ts: runStartedAt(),
+            job: JOB,
+            outcome: "failed",
+            stage: "scheduled",
+            error: String(error),
+          }),
+        );
+      }
+    })();
+    /**
+     * 同时递给 waitUntil 与本地 await：前者保证 isolate 在响应后仍把活干完，后者
+     * 保证这次的 promise 被显式观察过 —— 这正是修掉「rejection 被静默吞掉」的关键。
+     */
+    ctx.waitUntil(work);
+    await work;
   },
   async fetch(request: Request, env: Env): Promise<Response> {
     if (request.method !== "GET") {
       return new Response("Method Not Allowed", { status: 405 });
     }
+    // 鉴权先于一切分支：健康端点也只在带上 SYNC_TOKEN 时才回话。
     if (!authorized(request, env)) {
       return Response.json({ ok: false, error: "unauthorized" }, { status: 401 });
     }
-    const dryRun = new URL(request.url).searchParams.get("dry-run") === "1";
-    const result = await sync(env, { dryRun });
-    return Response.json({ ok: true, ...result });
+    const url = new URL(request.url);
+    if (url.searchParams.get("health") === "1") {
+      return Response.json(await health(env));
+    }
+    const dryRun = url.searchParams.get("dry-run") === "1";
+    try {
+      const result = await runSync(env, { dryRun });
+      // 保留原有 `ok:true + toAdd/toRemove` 形状（.zshrc 的 _limooo_sync_cf 与
+      // 其它调用方依赖它），新增字段只做增量。
+      return Response.json({
+        ok: true,
+        status: "synced",
+        synced: true,
+        dryRun,
+        toAdd: result.toAdd,
+        toRemove: result.toRemove,
+        runId: result.runId,
+        lastRun: await lastRun(env.DB, JOB),
+      });
+    } catch (error) {
+      // 失败不再只回 { ok:false }：把 error 与刚写下的那条失败运行记录一并返回，
+      // 调用方不必再翻日志才知道「为什么没推上去」。
+      return Response.json(
+        {
+          ok: false,
+          status: "error",
+          synced: false,
+          dryRun,
+          error: String(error),
+          lastRun: await lastRun(env.DB, JOB),
+        },
+        { status: 502 },
+      );
+    }
   },
 };

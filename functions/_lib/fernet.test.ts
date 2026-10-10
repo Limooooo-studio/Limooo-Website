@@ -26,11 +26,36 @@ import { fernetDecrypt, fernetEncrypt } from "./fernet";
 
 const TEST_KEY = "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=";
 const fixturePath = fileURLToPath(new URL("../../tests/fixtures/fernet_token.txt", import.meta.url));
+const tsFixturePath = fileURLToPath(
+  new URL("../../tests/fixtures/fernet_token_ts.txt", import.meta.url),
+);
 
 describe("fernet", () => {
   it("decrypts the Python-generated fixture", async () => {
     const token = readFileSync(fixturePath, "utf8").trim();
     expect(await fernetDecrypt(token, TEST_KEY)).toBe("hello-limooo");
+  });
+
+  /**
+   * W5-3：`fernetEncrypt` 的 base64url **必须保留 `=` 填充**。
+   *
+   * 生产真正依赖的方向是「TS 加密 → Python 解密」：`tracking.ts` 写 `ip_enc`，
+   * `ops/check_ip_rays.py` 用 `cryptography.fernet.Fernet.decrypt()` 解（内部是
+   * `base64.urlsafe_b64decode`，缺填充直接抛 `InvalidToken`）。
+   * 谁把这里的 `base64UrlEncode` 「简化」成共用的 `crypto.ts` 的 `toB64Url`
+   * （会去掉填充），整条链路就会对所有 IP 报「无记录」，而当时没有任何用例会红。
+   * 长度 100（73 字节）是确定值：AES-CBC 密文恒为 16 的倍数，所以这个输入必然带 `==`。
+   */
+  it("keeps the base64 padding that Python's Fernet decoder requires", async () => {
+    const token = await fernetEncrypt("8.8.8.8", TEST_KEY);
+    expect(token).toContain("=");
+    expect(token.length % 4).toBe(0);
+  });
+
+  it("decrypts the TS-generated fixture (the TS -> Python sample)", async () => {
+    const token = readFileSync(tsFixturePath, "utf8").trim();
+    expect(token).toContain("=");
+    expect(await fernetDecrypt(token, TEST_KEY)).toBe("8.8.8.8");
   });
 
   it("encrypts and decrypts round-trip", async () => {

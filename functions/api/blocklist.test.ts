@@ -31,22 +31,11 @@ vi.mock("../_lib/d1", () => ({
   executeBatch: vi.fn(),
 }));
 vi.mock("../_lib/logging", () => ({ logEvent: vi.fn() }));
-vi.mock("../_lib/session", () => ({
-  requireAuth: vi.fn(),
-  authUnavailableResponse: vi.fn(() => new Response("unavailable", { status: 503 })),
-  // 与生产同策略：委托给桩化的 requireAuth，未登录 401、非 admin 403。
-  requireAdminSession: vi.fn(async (env: unknown, request: Request, forbidden = "只读账户，无写入权限") => {
-    const { requireAuth: mocked } = await import("../_lib/session");
-    const session = await (mocked as (...a: unknown[]) => Promise<unknown>)(env, request);
-    if (!session) {
-      return Response.json({ error: "未登录" }, { status: 401, headers: { "Cache-Control": "no-store" } });
-    }
-    if ((session as { role?: string }).role !== "admin") {
-      return Response.json({ error: forbidden }, { status: 403, headers: { "Cache-Control": "no-store" } });
-    }
-    return { session };
-  }),
-}));
+vi.mock("../_lib/session", async () => {
+  // 共用桩（docs/22 W5-15）：语义与位置说明见 tests/helpers/admin-session.ts。
+  const { createSessionModuleMock } = await import("../../tests/helpers/admin-session");
+  return createSessionModuleMock();
+});
 vi.mock("../_lib/csrf", () => ({ verifyCsrf: vi.fn() }));
 import { verifyCsrf } from "../_lib/csrf";
 
@@ -113,6 +102,15 @@ describe("blocklist API", () => {
     vi.mocked(requireAuth).mockResolvedValue(null);
     const resp = await onRequestGet(context(new Request("https://limooo.cn/api/blocklist")) as never);
     expect(resp.status).toBe(401);
+  });
+
+  // W5-15：撤销表不可用时必须 fail-closed（生产语义：requireAuth 抛
+  // AuthSessionUnavailableError → requireAdminSession 返回 503）。
+  it("fails closed with 503 when the session store is unavailable", async () => {
+    vi.mocked(requireAuth).mockRejectedValueOnce(new Error("auth_sessions_unavailable"));
+    const resp = await onRequestGet(context(new Request("https://limooo.cn/api/blocklist")) as never);
+    expect(resp.status).toBe(503);
+    expect(vi.mocked(queryAll)).not.toHaveBeenCalled();
   });
 
   it("adds a canonical cidr with audit", async () => {

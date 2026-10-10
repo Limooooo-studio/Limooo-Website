@@ -29,22 +29,11 @@ import { logEvent } from "../../../_lib/logging";
 import type { Env } from "../../../_lib/env";
 
 vi.mock("../../../_lib/d1", () => ({ queryAll: vi.fn(), execute: vi.fn() }));
-vi.mock("../../../_lib/session", () => ({
-  requireAuth: vi.fn(),
-  authUnavailableResponse: vi.fn(() => new Response("unavailable", { status: 503 })),
-  // 与生产同策略：委托给桩化的 requireAuth，未登录 401、非 admin 403。
-  requireAdminSession: vi.fn(async (env: unknown, request: Request, forbidden = "只读账户，无写入权限") => {
-    const { requireAuth: mocked } = await import("../../../_lib/session");
-    const session = await (mocked as (...a: unknown[]) => Promise<unknown>)(env, request);
-    if (!session) {
-      return Response.json({ error: "未登录" }, { status: 401, headers: { "Cache-Control": "no-store" } });
-    }
-    if ((session as { role?: string }).role !== "admin") {
-      return Response.json({ error: forbidden }, { status: 403, headers: { "Cache-Control": "no-store" } });
-    }
-    return { session };
-  }),
-}));
+vi.mock("../../../_lib/session", async () => {
+  // 共用桩（docs/22 W5-15）：语义与位置说明见 tests/helpers/admin-session.ts。
+  const { createSessionModuleMock } = await import("../../../../tests/helpers/admin-session");
+  return createSessionModuleMock();
+});
 vi.mock("../../../_lib/csrf", () => ({ verifyCsrf: vi.fn() }));
 vi.mock("../../../_lib/fernet", () => ({ fernetEncrypt: vi.fn() }));
 vi.mock("../../../_lib/logging", () => ({ logEvent: vi.fn() }));
@@ -108,6 +97,13 @@ describe("apple-account account id API", () => {
       })) as never,
     );
     expect(ok.status).toBe(200);
+    // W5-2：metadata-only 更新必须把库里已存的密文**原样写回**。此前这条用例预置了
+    // `old-cipher` 却从不断言回写——把生产代码的 `existing[0].password` 换成 `""`
+    // 会静默清空所有已存密码，而响应仍是 200、全量用例仍绿。
+    // `execute(db, sql, ...values)`：values = [email, password, notes, id]，口令是第 2 个绑定值。
+    const write = vi.mocked(execute).mock.calls.at(-1);
+    expect(write?.[1]).toContain("UPDATE apple_accounts");
+    expect(write?.[3]).toBe("old-cipher");
 
     vi.mocked(queryAll).mockResolvedValueOnce([]);
     const missing = await onRequestPut(
@@ -144,6 +140,23 @@ describe("apple-account account id API", () => {
       } as never,
     );
     expect(badId.status).toBe(400);
+  });
+
+  // W5-15：撤销表不可用时必须 fail-closed（503），且不得读库/落库。
+  it("fails closed with 503 when the session store is unavailable", async () => {
+    vi.mocked(requireAuth).mockRejectedValueOnce(new Error("auth_sessions_unavailable"));
+    const resp = await onRequestPut(
+      context(request("PUT", {
+        email: "alice@account.limooo.cn",
+        password: "",
+        notes: "",
+        password_changed: false,
+      })) as never,
+    );
+    expect(resp.status).toBe(503);
+    expect(((await resp.json()) as { error: string }).error).toBe("auth_sessions_unavailable");
+    expect(vi.mocked(queryAll)).not.toHaveBeenCalled();
+    expect(vi.mocked(execute)).not.toHaveBeenCalled();
   });
 
   it("deletes an existing account", async () => {
@@ -183,6 +196,23 @@ describe("apple-account account id API", () => {
       expect(details?.actorSub).toBe("user-1");
       expect(details?.status).toBe(200);
       expect(JSON.stringify(audit)).not.toContain("old-cipher");
+    });
+
+    /**
+     * W5-2：这是「元数据更新不许动口令」的正面契约用例。
+     *
+     * 用一个可辨识的密文，逐位钉住 `execute` 的全部绑定值（`values[1]` 就是口诀字段）：
+     * 生产代码若把 `existing[0].password` 写成 `""`、或把 SQL 的 email/password
+     * 位置调换，这条立刻变红。
+     */
+    it("writes the stored password back verbatim on a metadata-only update", async () => {
+      const stored = "old-cipher-W5-2";
+      vi.mocked(queryAll).mockResolvedValueOnce([{ password: stored }]);
+      const resp = await onRequestPut(context(request("PUT", updateBody)) as never);
+      expect(resp.status).toBe(200);
+      const values = vi.mocked(execute).mock.calls.at(-1)?.slice(2);
+      expect(values).toEqual(["alice@account.limooo.cn", stored, "", 1]);
+      expect(values?.[1]).not.toBe("");
     });
 
     it("audits a password change without recording the new password", async () => {

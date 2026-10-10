@@ -1043,3 +1043,150 @@ describe("request URL is parsed once per request", () => {
     expect(reads.acceptLanguage).toBe(0);
   });
 });
+
+/**
+ * `cachedPageAsset` 直接把 ASSETS 的 body 流透传（docs/22 增量 ⑤）。
+ *
+ * 这里锁三件事：响应**字节**逐字节不变、状态码/全部响应头逐项不变、
+ * `cache.put` 仍然发生并且拿到的是同一份字节（tee 两条分支都能读完）。
+ * 字节里故意混入 NUL、0xFF 与多字节 UTF-8：任何「按字符串重建」的写法都会露馅。
+ */
+describe("cachedPageAsset passes the asset body through", () => {
+  const BYTES = new Uint8Array([
+    0x3c, 0x21, 0x64, 0x6f, 0x63, 0x74, 0x79, 0x70, 0x65, 0x3e, 0x0a, 0x00, 0xff, 0xe4, 0xb8, 0xad,
+    0xf0, 0x9f, 0x8e, 0x89, 0x0a, 0x7b, 0x7d, 0x0a,
+  ]);
+  const ASSET_HEADERS = {
+    "Content-Type": "text/html; charset=utf-8",
+    "Content-Length": String(BYTES.length),
+    ETag: '"v1"',
+  };
+
+  function stubCaches() {
+    const puts: Array<{ key: string; bytes: Uint8Array }> = [];
+    const hits: Response[] = [];
+    const original = (globalThis as { caches?: unknown }).caches;
+    (globalThis as { caches?: unknown }).caches = {
+      default: {
+        match: async () => hits.shift(),
+        put: async (req: RequestInfo | URL, resp: Response) => {
+          const key = typeof req === "string" ? req : req instanceof URL ? req.href : req.url;
+          puts.push({ key, bytes: new Uint8Array(await resp.arrayBuffer()) });
+        },
+      },
+    };
+    return {
+      puts,
+      hits,
+      restore: () => {
+        (globalThis as { caches?: unknown }).caches = original;
+      },
+    };
+  }
+
+  function assetsEnv(body: BodyInit | null = BYTES, status = 200) {
+    const fetch = vi.fn(async () =>
+      new Response(body, { status, statusText: status === 200 ? "OK" : "Not Found", headers: ASSET_HEADERS }),
+    );
+    return { fetch } as unknown as Env["ASSETS"];
+  }
+
+  function pageRequest(headers: Record<string, string> = {}) {
+    return new Request("https://limooo.cn/services", {
+      headers: { "CF-Connecting-IP": "97.64.18.11", ...headers },
+    });
+  }
+
+  it("returns the exact asset bytes and headers, and still fills the cache", async () => {
+    const caches = stubCaches();
+    const assets = assetsEnv();
+    try {
+      const resp = await handleOnRequest(
+        context(pageRequest({ Cookie: "user_lang_preference=zh-cn" }), { ASSETS: assets }),
+      );
+
+      expect(resp.status).toBe(200);
+      expect(resp.statusText).toBe("OK");
+      // 页面缓存头是覆盖后的值，其余响应头逐项从 ASSETS 搬过来。
+      expect(resp.headers.get("Cache-Control")).toBe(
+        "public, max-age=300, stale-while-revalidate=3600",
+      );
+      expect(resp.headers.get("Vary")).toBe("Accept-Language");
+      expect(resp.headers.get("Content-Type")).toBe(ASSET_HEADERS["Content-Type"]);
+      expect(resp.headers.get("Content-Length")).toBe(ASSET_HEADERS["Content-Length"]);
+      expect(resp.headers.get("ETag")).toBe(ASSET_HEADERS.ETag);
+
+      // 字节逐字节相同（含 NUL / 0xFF / 4 字节 UTF-8）。
+      expect(new Uint8Array(await resp.arrayBuffer())).toEqual(BYTES);
+
+      // 已有语言 cookie：不补 Set-Cookie，且缓存写入仍然发生、拿到同一份字节。
+      expect(resp.headers.getSetCookie()).toEqual([]);
+      expect(caches.puts).toHaveLength(1);
+      expect(caches.puts[0].bytes).toEqual(BYTES);
+      expect(caches.puts[0].key).toContain("lang=zh-cn");
+      expect(new URL(caches.puts[0].key).hostname).toBe("limooo.cn");
+      expect(String(vi.mocked(assets.fetch).mock.calls[0][0])).toBe(
+        "https://limooo.cn/zh-cn/services.html",
+      );
+    } finally {
+      caches.restore();
+    }
+  });
+
+  it("keeps the language Set-Cookie (single header, multiple semantics) on a first visit", async () => {
+    const caches = stubCaches();
+    try {
+      const resp = await handleOnRequest(context(pageRequest(), { ASSETS: assetsEnv() }));
+
+      expect(resp.status).toBe(200);
+      expect(new Uint8Array(await resp.arrayBuffer())).toEqual(BYTES);
+      const cookies = resp.headers.getSetCookie();
+      expect(cookies).toHaveLength(1);
+      expect(cookies[0]).toContain("user_lang_preference=en-us");
+      // 首访会补 Set-Cookie，因此这次刻意不写缓存（与改动前一致）。
+      expect(caches.puts).toHaveLength(0);
+    } finally {
+      caches.restore();
+    }
+  });
+
+  it("does not fill the cache for a failed asset fetch", async () => {
+    const caches = stubCaches();
+    const assets = assetsEnv("missing", 404);
+    try {
+      const resp = await handleOnRequest(
+        context(pageRequest({ Cookie: "user_lang_preference=zh-cn" }), { ASSETS: assets }),
+      );
+
+      expect(caches.puts).toHaveLength(0);
+      expect(vi.mocked(assets.fetch)).toHaveBeenCalledTimes(1);
+      // 资产缺失时交回 next()（页面路由的既有行为），不是 404。
+      await expect(resp.text()).resolves.toBe("next");
+    } finally {
+      caches.restore();
+    }
+  });
+
+  it("serves a cache hit without touching ASSETS", async () => {
+    const caches = stubCaches();
+    const assets = assetsEnv();
+    caches.hits.push(
+      new Response(BYTES.slice(), {
+        status: 200,
+        headers: { "Content-Type": "text/html; charset=utf-8" },
+      }),
+    );
+    try {
+      const resp = await handleOnRequest(
+        context(pageRequest({ Cookie: "user_lang_preference=zh-cn" }), { ASSETS: assets }),
+      );
+
+      expect(resp.status).toBe(200);
+      expect(new Uint8Array(await resp.arrayBuffer())).toEqual(BYTES);
+      expect(vi.mocked(assets.fetch)).not.toHaveBeenCalled();
+      expect(caches.puts).toHaveLength(0);
+    } finally {
+      caches.restore();
+    }
+  });
+});

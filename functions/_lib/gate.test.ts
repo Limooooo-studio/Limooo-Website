@@ -472,6 +472,26 @@ describe("isBlocked blocked_ips cache", () => {
     expect(await isBlocked({ DB: db } as never, request, "1.2.3.9")).toBe(true);
   });
 
+  it("returns false (fail-open) when both the list read and the fallback query throw", async () => {
+    // 把**现状**钉死：D1 抛错时 isBlocked() 返回 false（放行），不是 403。
+    // 依据是 gate.ts 的契约注释「DB 异常时放行 / fail-open 语义不变」与
+    // isBlocked() 末尾那个空 catch —— 应用层拦截在数据库不可用时让路。
+    //
+    // 这条用例记录的是当前语义，**不是**在宣告它正确：改成 fail-closed 会让它变红，
+    // 而那是线上行为变更（D1 一抖全站 403），必须单独决策，见 docs/22 的风险项。
+    const db = {
+      prepare() {
+        throw new Error("D1_ERROR: blocked_ips unavailable");
+      },
+    };
+    // 全量读（prepare 抛）与逐前缀回退读（queryAll 拒绝）两条路都失败。
+    vi.mocked(queryAll).mockRejectedValue(new Error("D1_ERROR: blocked_ips unavailable"));
+
+    await expect(isBlocked({ DB: db } as never, request, "1.2.3.9")).resolves.toBe(false);
+    // 放行不是「命中后放行」：一次 block_match 都不该记。
+    expect(vi.mocked(logEvent)).not.toHaveBeenCalled();
+  });
+
   it("keeps one cache per DB binding so two environments cannot leak into each other", async () => {
     const blockingDb = fakeDb(blocking);
     const cleanDb = fakeDb([]);

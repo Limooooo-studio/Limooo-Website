@@ -29,22 +29,11 @@ import type { Env } from "../../../_lib/env";
 
 vi.mock("../../../_lib/d1", () => ({ queryAll: vi.fn() }));
 vi.mock("../../../_lib/logging", () => ({ logEvent: vi.fn() }));
-vi.mock("../../../_lib/session", () => ({
-  requireAuth: vi.fn(),
-  authUnavailableResponse: vi.fn(() => new Response("unavailable", { status: 503 })),
-  // 与生产同策略：委托给桩化的 requireAuth，未登录 401、非 admin 403。
-  requireAdminSession: vi.fn(async (env: unknown, request: Request, forbidden = "只读账户，无写入权限") => {
-    const { requireAuth: mocked } = await import("../../../_lib/session");
-    const session = await (mocked as (...a: unknown[]) => Promise<unknown>)(env, request);
-    if (!session) {
-      return Response.json({ error: "未登录" }, { status: 401, headers: { "Cache-Control": "no-store" } });
-    }
-    if ((session as { role?: string }).role !== "admin") {
-      return Response.json({ error: forbidden }, { status: 403, headers: { "Cache-Control": "no-store" } });
-    }
-    return { session };
-  }),
-}));
+vi.mock("../../../_lib/session", async () => {
+  // 共用桩（docs/22 W5-15）：语义与位置说明见 tests/helpers/admin-session.ts。
+  const { createSessionModuleMock } = await import("../../../../tests/helpers/admin-session");
+  return createSessionModuleMock();
+});
 
 const TEST_KEY = "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=";
 const HASH = "0123456789abcdef";
@@ -92,6 +81,14 @@ describe("visitor ip API", () => {
     vi.mocked(requireAuth).mockResolvedValue({ role: "viewer" } as never);
     resp = await onRequestGet(context(HASH, { VISITOR_IP_KEY: TEST_KEY } as Env) as never);
     expect(resp.status).toBe(403);
+    expect(vi.mocked(queryAll)).not.toHaveBeenCalled();
+  });
+
+  // W5-15：撤销表不可用时必须 fail-closed（503），不能退化成 401/404。
+  it("fails closed with 503 when the session store is unavailable", async () => {
+    vi.mocked(requireAuth).mockRejectedValueOnce(new Error("auth_sessions_unavailable"));
+    const resp = await onRequestGet(context(HASH, { VISITOR_IP_KEY: TEST_KEY } as Env) as never);
+    expect(resp.status).toBe(503);
     expect(vi.mocked(queryAll)).not.toHaveBeenCalled();
   });
 

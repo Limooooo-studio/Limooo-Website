@@ -28,22 +28,11 @@ import { logEvent } from "../../_lib/logging";
 import type { Env } from "../../_lib/env";
 
 vi.mock("../../_lib/d1", () => ({ queryAll: vi.fn(), executeBatch: vi.fn() }));
-vi.mock("../../_lib/session", () => ({
-  requireAuth: vi.fn(),
-  authUnavailableResponse: vi.fn(() => new Response("unavailable", { status: 503 })),
-  // 与生产同策略：委托给桩化的 requireAuth，未登录 401、非 admin 403。
-  requireAdminSession: vi.fn(async (env: unknown, request: Request, forbidden = "只读账户，无写入权限") => {
-    const { requireAuth: mocked } = await import("../../_lib/session");
-    const session = await (mocked as (...a: unknown[]) => Promise<unknown>)(env, request);
-    if (!session) {
-      return Response.json({ error: "未登录" }, { status: 401, headers: { "Cache-Control": "no-store" } });
-    }
-    if ((session as { role?: string }).role !== "admin") {
-      return Response.json({ error: forbidden }, { status: 403, headers: { "Cache-Control": "no-store" } });
-    }
-    return { session };
-  }),
-}));
+vi.mock("../../_lib/session", async () => {
+  // 共用桩（docs/22 W5-15）：语义与位置说明见 tests/helpers/admin-session.ts。
+  const { createSessionModuleMock } = await import("../../../tests/helpers/admin-session");
+  return createSessionModuleMock();
+});
 vi.mock("../../_lib/csrf", () => ({ verifyCsrf: vi.fn() }));
 vi.mock("../../_lib/logging", () => ({ logEvent: vi.fn() }));
 
@@ -133,6 +122,15 @@ describe("apple-account reorder API", () => {
     vi.mocked(verifyCsrf).mockResolvedValue(false);
     // 提交完整的 2 个 id，确保 403 来自 CSRF 而不是集合校验。
     expect((await onRequestPut(context({ order: [1, 2] }) as never)).status).toBe(403);
+  });
+
+  // W5-15：撤销表不可用时必须 fail-closed（503），且不得发 batch。
+  it("fails closed with 503 when the session store is unavailable", async () => {
+    vi.mocked(requireAuth).mockRejectedValueOnce(new Error("auth_sessions_unavailable"));
+    const resp = await onRequestPut(context({ order: [1, 2] }) as never);
+    expect(resp.status).toBe(503);
+    expect(((await resp.json()) as { error: string }).error).toBe("auth_sessions_unavailable");
+    expect(vi.mocked(executeBatch)).not.toHaveBeenCalled();
   });
 
   /** W9-4：排序改的是展示顺序，也属账号变更，必须留审计。 */

@@ -26,7 +26,8 @@
 （与 Worker `functions/_lib/visitor-ip.ts` 用的是同一把，互相可解）。
 
 数据源：D1 `visitor_rollups`（按 (ip_hash, last_ts) 索引精确取行，不扫表）。
-`--requests` 会额外读 ray_log_v2，那张表没有 ip_hash 索引（只能扫），默认关闭。
+`--requests` 会额外读 ray_log_v2；该表自迁移 017 起有 (ip_hash, ts DESC) 索引，
+所以这条查询也是按 ip_hash 精确定位，不再扫 7 天明细表。默认仍然关闭。
 
 注意：**2026-09-26 之前的行没有密文**，只有不可逆的哈希。脚本把
 「查不到这个 ID」和「有记录但没密文」分开返回，不会把后者误报成不存在。
@@ -105,7 +106,7 @@ def main() -> int:
         type=int,
         default=0,
         metavar="N",
-        help="also list the most recent N request details (reads ray_log_v2; that table has no ip_hash index, so it scans)",
+        help="also list the most recent N request details (reads ray_log_v2, indexed by (ip_hash, ts) since migration 017)",
     )
     args = parser.parse_args()
 
@@ -193,16 +194,17 @@ def main() -> int:
 
     if args.requests > 0:
         print(f"recent requests (ray_log_v2, up to {args.requests})", flush=True)
-        # docs/22 W7-9：ray_log_v2 没有 (ip_hash, ts DESC) 索引，这条查询是全表扫；
-        # 开扫之前先报出代价，别让排障脚本自己撞上 D1 读取预算。
+        # docs/22 W7-9 + 迁移 017：这条查询现在走 (ip_hash, ts DESC) 索引精确取行。
+        # 仍然先报出规模：排障脚本要在开扫之前说清楚会读到什么，别自己撞上
+        # D1 读取预算。
         warn(
             "  "
             + d1_client.scan_note(
                 cfg,
                 "ray_log_v2",
                 f"ip_hash = '{visitor}'",
-                "no (ip_hash, ts DESC) index; the 7-day detail table is scanned",
-                "The main lookup above uses the (ip_hash, last_ts) index instead; drop --requests to avoid this scan.",
+                "indexed by (ip_hash, ts DESC) since migration 017; at most this visitor's own rows are read",
+                "The main lookup above uses the (ip_hash, last_ts) index instead; drop --requests to skip this read.",
             )
         )
         try:

@@ -172,11 +172,13 @@ def scan_note(
     reason: str,
     hint: str,
 ) -> str:
-    """如实描述一次扫表查询的代价（docs/22 W7-9）。
+    """如实描述一次有代价查询的规模（docs/22 W7-9）。
 
-    ray_log_v2 只有 ts 索引，按 ip_hash 查必然全表扫；visitor_rollups 的 ip_enc
-    也没有索引。排障脚本本身不该成为下一次 D1 读取事故的原因，所以要在开扫之前
-    把「大概扫多少行」说清楚，并给出更便宜的入口。
+    调用方传入的 where 决定了这次要读多少行：ray_log_v2 自迁移 017 起有
+    (ip_hash, ts DESC) 索引，按 ip_hash 查已不是全表扫，但**有多少行仍取决于
+    数据**（某个 IP 在 7 天窗口里可能一行都没有、也可能上千行）；visitor_rollups
+    的 ip_enc 则依然没有索引，只能逐行解密。排障脚本本身不该成为下一次 D1 读取
+    事故的原因，所以要在开查之前把「大概会读多少行」说清楚，并给出更便宜的入口。
     """
     probe = bounded_row_count(cfg, table, where)
     if probe is None:

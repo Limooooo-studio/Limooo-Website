@@ -29,11 +29,17 @@
 #
 # Step set (identical to .github/workflows/tests.yml -- keep both in sync):
 #   typescript: build / typecheck / migrate --dry-run / npm test / coverage (report only)
-#   python:     ruff / mypy / pytest / security headers / readme_facts.py --check
+#   python:     ruff / mypy / pytest / security headers / license headers / readme_facts.py --check
 #
 # ruff and mypy are probed, not required (same treatment as pytest-cov):
 # installed -> run and fail the gate; missing -> one [ci] SKIP line, no failure.
 # Why probe: they live in ops/requirements.txt but the build venv may predate them.
+#
+# Build output isolation: LIMOOO_PUBLIC_DIR / LIMOOO_PREVIEW_DIR point the build at a
+# scratch dir instead of the iCloud-synced tree. Export them to pin the location: the
+# value is used exactly as given and is never removed. Left unset, every run gets its
+# own mktemp -d directory (removed on exit), so two concurrent runs cannot delete each
+# other's files mid-build.
 #
 # Usage:
 #   bash ops/ci_check.sh                # check the current working tree
@@ -62,7 +68,12 @@ while [ $# -gt 0 ]; do
         --typescript) RUN_PY=0 ;;
         --python) RUN_TS=0 ;;
         --no-build) DO_BUILD=0 ;;
-        --help|-h) sed -n '20,45p' "$0"; exit 0 ;;
+        # 帮助文本就是文件顶部那段注释（"# Local replica" 到 "set -euo pipefail" 之前）。
+        # 故意不写死行号：注释一增删，sed 的固定区间就会**悄悄**截断帮助文本。
+        --help|-h)
+            awk '/^# Local replica/,/^set -euo pipefail/' "$0" | sed '$d'
+            exit 0
+            ;;
         *)
             echo "FATAL: unknown argument $1" >&2
             echo "       supported: --ref=<rev> / --typescript / --python / --no-build" >&2
@@ -73,8 +84,33 @@ while [ $# -gt 0 ]; do
 done
 
 # ── 隔离的构建输出：别在 iCloud 同步区里反复 rm -rf public/ ──────────
-export LIMOOO_PUBLIC_DIR="${LIMOOO_PUBLIC_DIR:-/tmp/limooo-ci-public}"
-export LIMOOO_PREVIEW_DIR="${LIMOOO_PREVIEW_DIR:-/tmp/limooo-ci-preview}"
+# 默认路径必须**每进程唯一**：两个 ci_check.sh 并发时，build.py 开头的 rmtree 会
+# 互删对方的中转目录（Errno 66 Directory not empty / FileNotFoundError），审计期间
+# 已经因此浪费了两个代理的排查时间。显式传入时行为完全不变——沿用传入值、不做
+# 唯一化、退出时也绝不删（那是调用方的目录，不是本进程的临时目录）。
+CI_TMP_PUBLIC=""
+CI_TMP_PREVIEW=""
+# TMPDIR 在 macOS 上以 / 结尾，直接拼会写出 "//" —— 去掉尾斜杠只为输出干净。
+SCRATCH_ROOT="${TMPDIR:-/tmp}"
+SCRATCH_ROOT="${SCRATCH_ROOT%/}"
+if [ -z "${LIMOOO_PUBLIC_DIR:-}" ]; then
+    LIMOOO_PUBLIC_DIR="$(mktemp -d "$SCRATCH_ROOT/limooo-ci-public.XXXXXX")" || {
+        echo "FATAL: cannot create a temporary public dir under $SCRATCH_ROOT" >&2
+        exit 2
+    }
+    CI_TMP_PUBLIC="$LIMOOO_PUBLIC_DIR"
+fi
+if [ -z "${LIMOOO_PREVIEW_DIR:-}" ]; then
+    LIMOOO_PREVIEW_DIR="$(mktemp -d "$SCRATCH_ROOT/limooo-ci-preview.XXXXXX")" || {
+        echo "FATAL: cannot create a temporary preview dir under $SCRATCH_ROOT" >&2
+        exit 2
+    }
+    CI_TMP_PREVIEW="$LIMOOO_PREVIEW_DIR"
+fi
+export LIMOOO_PUBLIC_DIR LIMOOO_PREVIEW_DIR
+if [ -n "$CI_TMP_PUBLIC" ] || [ -n "$CI_TMP_PREVIEW" ]; then
+    echo "[ci] scratch dirs: public=$LIMOOO_PUBLIC_DIR preview=$LIMOOO_PREVIEW_DIR (temporary, removed on exit)"
+fi
 
 # Python 解释器：优先用构建 venv（依赖齐），其次 python3。
 PYTHON_BIN="${PYTHON_BIN:-python3}"
@@ -86,6 +122,15 @@ WORKTREE=""
 cleanup() {
     if [ -n "$WORKTREE" ] && [ -d "$WORKTREE" ]; then
         git worktree remove --force "$WORKTREE" >/dev/null 2>&1 || rm -rf "$WORKTREE"
+    fi
+    # 只删本进程 mktemp 出来的目录（显式传入的路径不归我们管，见上）。
+    # 用 if 而不是 `[ -n x ] && rm`：后者条件为假时返回 1，set -e 下的 EXIT trap
+    # 不该让清理逻辑本身变成失败来源。
+    if [ -n "$CI_TMP_PUBLIC" ]; then
+        rm -rf "$CI_TMP_PUBLIC"
+    fi
+    if [ -n "$CI_TMP_PREVIEW" ]; then
+        rm -rf "$CI_TMP_PREVIEW"
     fi
 }
 trap cleanup EXIT
@@ -259,6 +304,8 @@ if [ "$RUN_PY" = 1 ]; then
     fi
     echo "[ci] python ops/check_security_headers.py"
     (cd "$TARGET" && "$PYTHON_BIN" ops/check_security_headers.py)
+    echo "[ci] python ops/check_license_headers.py"
+    (cd "$TARGET" && "$PYTHON_BIN" ops/check_license_headers.py)
     echo "[ci] python ops/readme_facts.py --check"
     (cd "$TARGET" && "$PYTHON_BIN" ops/readme_facts.py --check)
 fi

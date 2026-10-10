@@ -182,7 +182,15 @@ async function cachedPageAsset(
   const headers = new Headers(asset.headers);
   headers.set("Cache-Control", PAGE_CACHE_CONTROL);
   headers.set("Vary", PAGE_CACHE_VARY);
-  const response = new Response(await asset.arrayBuffer(), {
+  // 直接把 ASSETS 的 body 流透传出去，不再 `await asset.arrayBuffer()` 先整块读进内存：
+  // 下面 `cache.put(response.clone())` 本来就会为两条分支做一次 tee，先缓冲等于把同一份
+  // 内容多物化一遍，而且会一直读到尾才返回。状态码 / statusText / 全部响应头（含 ASSETS
+  // 给的 Content-Type、ETag、Content-Length）逐项照搬，所以线上字节与响应头不变——
+  // 最终出口 `withSecurityHeaders()` 反正也是 `new Response(resp.body, …)`，body 在两种
+  // 写法下都是流，Content-Length 走的一直是这里从 asset 复制的那个值。
+  // `asset.body` 只在 204/205 这类「无 body 状态码」上为 null；那种资产不存在，
+  // 而旧写法对 204 会直接抛 TypeError（Response 不允许带 body 的 204），新写法不再抛。
+  const response = new Response(asset.body, {
     status: asset.status,
     statusText: asset.statusText,
     headers,

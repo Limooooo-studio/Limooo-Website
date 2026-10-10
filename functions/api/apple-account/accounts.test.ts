@@ -29,22 +29,11 @@ import { fernetEncrypt } from "../../_lib/fernet";
 import type { Env } from "../../_lib/env";
 
 vi.mock("../../_lib/d1", () => ({ queryAll: vi.fn(), execute: vi.fn() }));
-vi.mock("../../_lib/session", () => ({
-  requireAuth: vi.fn(),
-  authUnavailableResponse: vi.fn(() => new Response("unavailable", { status: 503 })),
-  // 与生产同策略：委托给桩化的 requireAuth，未登录 401、非 admin 403。
-  requireAdminSession: vi.fn(async (env: unknown, request: Request, forbidden = "只读账户，无写入权限") => {
-    const { requireAuth: mocked } = await import("../../_lib/session");
-    const session = await (mocked as (...a: unknown[]) => Promise<unknown>)(env, request);
-    if (!session) {
-      return Response.json({ error: "未登录" }, { status: 401, headers: { "Cache-Control": "no-store" } });
-    }
-    if ((session as { role?: string }).role !== "admin") {
-      return Response.json({ error: forbidden }, { status: 403, headers: { "Cache-Control": "no-store" } });
-    }
-    return { session };
-  }),
-}));
+vi.mock("../../_lib/session", async () => {
+  // 共用桩（docs/22 W5-15）：语义与位置说明见 tests/helpers/admin-session.ts。
+  const { createSessionModuleMock } = await import("../../../tests/helpers/admin-session");
+  return createSessionModuleMock();
+});
 vi.mock("../../_lib/csrf", () => ({ verifyCsrf: vi.fn() }));
 vi.mock("../../_lib/fernet", () => ({ fernetEncrypt: vi.fn() }));
 vi.mock("../../_lib/logging", () => ({ logEvent: vi.fn() }));
@@ -131,6 +120,19 @@ describe("apple account accounts API", () => {
       context(appleAccountRequest("POST", { email: "a", password: "p", notes: "" })) as never,
     );
     expect(viewer.status).toBe(403);
+  });
+
+  // W5-15：撤销表不可用时必须 fail-closed（503），且不得落库。
+  it("fails closed with 503 when the session store is unavailable", async () => {
+    vi.mocked(requireAuth).mockRejectedValueOnce(new Error("auth_sessions_unavailable"));
+    const resp = await onRequestPost(
+      context(appleAccountRequest("POST", { email: "a", password: "p", notes: "" })) as never,
+    );
+    expect(resp.status).toBe(503);
+    // 这条顺带证明 beforeEach 里配的 authUnavailableResponse（生产 JSON 体）
+    // 不再是死配置：以前桩里没有 catch，这条路径永远走不到。
+    expect(((await resp.json()) as { error: string }).error).toBe("auth_sessions_unavailable");
+    expect(vi.mocked(execute)).not.toHaveBeenCalled();
   });
 
   it("rejects a missing CSRF token", async () => {
