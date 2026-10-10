@@ -19,6 +19,14 @@ def _write(dir_path, name, text):
     return path
 
 
+# 这里曾经有一个 autouse fixture 在每个用例前后调 render_app._cached_pricing.cache_clear()：
+# 当时缓存把 SERVICES_DIR 闭包在 import 期，换目录不会失配。现在 render_app 的缓存
+# **以目录为 key**（`_cached_pricing(services_dir)`，见 render_app 里那段注释），
+# 换目录自然 miss，兜底失效逻辑已成死代码，故删除。
+# 回归保护在 tests/test_build_w4.py：test_two_services_dirs_do_not_cross_pollute
+# （两个临时目录连续渲染，**不调用** cache_clear，断言互不污染）。
+
+
 @pytest.fixture
 def services_dir(tmp_path, monkeypatch):
     """把价目表目录指向临时目录，避免测试依赖仓库里的真实 CSV 内容。"""
@@ -323,3 +331,69 @@ def test_services_page_matches_committed_csv():
     # 每个档位都必须渲染出一个价格格（数字或 '-'），数量跟 CSV 对齐
     assert html.count('<span class="price-num">') == len(pricing["convention"]) + 4
     assert "None" not in html
+
+
+def test_overflow_price_column_renders_dash(services_dir):
+    """价格列多一个逗号（`1,000`）不能让构建抛 AttributeError。
+
+    数据行字段数多于表头时，csv.DictReader 把溢出的列塞进 row[None]（值是 list）。
+    约定是「解析不出正整数就渲染 '-'，构建永不因此失败」，所以溢出列要归一化成
+    字符串（"1,000"）交给 _parse_price，自然得到 None。
+    """
+    _write(services_dir, CONVENTION_CSV, "shots,price\n1,1,000\n3,55\n6,100\n9,150\n")
+    _write(
+        services_dir,
+        OUTDOOR_CSV,
+        "type,people,price\nstudio,solo,1,000\nstudio,duo,150\noutdoor,solo,120\noutdoor,duo,180\n",
+    )
+
+    pricing = load_pricing()
+
+    assert pricing["convention"][0]["price"] is None
+    assert pricing["convention"][0]["no_price"] is True
+    assert [plan["price"] for plan in pricing["convention"]] == [None, 55, 100, 150]
+    assert pricing["outdoor"][0]["price"] is None
+    assert pricing["outdoor"][0]["no_price"] is True
+
+    html = build.render_page(RENDER_APP, "services.html", "/services", "zh-cn")
+
+    # 溢出的那一档只把数字换成 '-'：CNY 前缀与单位后缀留在原位，其他档位照旧
+    assert '<span class="price-num">CNY -<span class="plan-unit" data-i18n="unit_per_shot">' in html
+    assert re.findall(r'<span class="price-num">CNY (\d+)', html) == [
+        "55",
+        "100",
+        "150",
+        "150",
+        "120",
+        "180",
+    ]
+    assert "1,000" not in html
+    assert "CNY None" not in html
+
+
+@pytest.mark.parametrize(
+    "filename,text",
+    [
+        (CONVENTION_CSV, "shots,price,price\n1,20\n3,55\n6,100\n9,150\n"),
+        (
+            OUTDOOR_CSV,
+            "type,people,price,price\n"
+            "studio,solo,100\nstudio,duo,150\noutdoor,solo,120\noutdoor,duo,180\n",
+        ),
+    ],
+)
+def test_duplicate_header_fails_the_build(services_dir, filename, text):
+    """重复表头（`shots,price,price`）会静默取最后一列——必须报错，且报错要带文件名。"""
+    _write(services_dir, CONVENTION_CSV, "shots,price\n1,20\n3,55\n6,100\n9,150\n")
+    _write(
+        services_dir,
+        OUTDOOR_CSV,
+        "type,people,price\nstudio,solo,100\nstudio,duo,150\noutdoor,solo,120\noutdoor,duo,180\n",
+    )
+    _write(services_dir, filename, text)
+
+    with pytest.raises(RuntimeError) as excinfo:
+        load_pricing()
+
+    assert filename in str(excinfo.value)
+    assert "duplicate" in str(excinfo.value)

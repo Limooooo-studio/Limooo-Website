@@ -5,6 +5,7 @@ import { onRequestGet, onRequestPost } from "./accounts";
 import { execute, queryAll } from "../../_lib/d1";
 import { authUnavailableResponse, requireAuth } from "../../_lib/session";
 import { verifyCsrf } from "../../_lib/csrf";
+import { logEvent } from "../../_lib/logging";
 import { fernetEncrypt } from "../../_lib/fernet";
 import type { Env } from "../../_lib/env";
 
@@ -27,6 +28,7 @@ vi.mock("../../_lib/session", () => ({
 }));
 vi.mock("../../_lib/csrf", () => ({ verifyCsrf: vi.fn() }));
 vi.mock("../../_lib/fernet", () => ({ fernetEncrypt: vi.fn() }));
+vi.mock("../../_lib/logging", () => ({ logEvent: vi.fn() }));
 
 const env = {
   APPLE_ACCOUNT_ENCRYPTION_KEY: "test-key",
@@ -154,5 +156,52 @@ describe("apple account accounts API", () => {
     );
     expect(resp.status).toBe(500);
     env.APPLE_ACCOUNT_ENCRYPTION_KEY = "test-key";
+  });
+
+  /**
+   * W9-4 / W9-6：Apple 账号变更是最敏感的管理操作之一（明文密码），必须留审计；
+   * 同时不能把任何 D1 故障都说成「该邮箱已存在」。
+   */
+  describe("audit and error classification", () => {
+    const payload = { email: "alice", password: "secret", notes: "note" };
+
+    it("writes an audit row when the account is created", async () => {
+      vi.mocked(queryAll).mockResolvedValueOnce([{ n: 0 }]);
+      const resp = await onRequestPost(context(appleAccountRequest("POST", payload)) as never);
+      expect(resp.status).toBe(200);
+
+      const audit = vi
+        .mocked(logEvent)
+        .mock.calls.find((call) => call[1] === "audit_event");
+      expect(audit, "创建账号必须写 audit_event").toBeTruthy();
+      const details = audit?.[3] as { outcome?: string; status?: number; actorSub?: string } | undefined;
+      expect(details?.outcome).toBe("account_created");
+      expect(details?.status).toBe(200);
+      expect(details?.actorSub).toBe("user-1");
+      // 绝不把口令写进审计。
+      expect(JSON.stringify(audit)).not.toContain("secret");
+    });
+
+    it("still returns 409 for a real UNIQUE conflict", async () => {
+      vi.mocked(queryAll).mockResolvedValueOnce([{ n: 0 }]);
+      vi.mocked(execute).mockRejectedValueOnce(
+        new Error("D1_ERROR: UNIQUE constraint failed: apple_accounts.email"),
+      );
+      const resp = await onRequestPost(context(appleAccountRequest("POST", payload)) as never);
+      expect(resp.status).toBe(409);
+      const audit = vi.mocked(logEvent).mock.calls.find((call) => call[1] === "audit_event");
+      expect((audit?.[3] as { outcome?: string })?.outcome).toBe("account_create_conflict");
+    });
+
+    it("returns 500 and audits a non-UNIQUE D1 failure instead of claiming the email exists", async () => {
+      vi.mocked(queryAll).mockResolvedValueOnce([{ n: 0 }]);
+      vi.mocked(execute).mockRejectedValueOnce(new Error("D1_ERROR: Exceeded maximum DB size"));
+      const resp = await onRequestPost(context(appleAccountRequest("POST", payload)) as never);
+      expect(resp.status).toBe(500);
+      const error = (await resp.json()) as { error: string };
+      expect(error.error).not.toContain("已存在");
+      const audit = vi.mocked(logEvent).mock.calls.find((call) => call[1] === "audit_event");
+      expect((audit?.[3] as { outcome?: string })?.outcome).toBe("account_create_failed");
+    });
   });
 });

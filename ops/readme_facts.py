@@ -87,25 +87,63 @@ def retention_facts() -> dict:
 
 
 def gate_trust_facts() -> dict:
+    """信任清单计数：ASN 读 data/whitelist.txt（唯一事实源），CIDR 读生成产物。
+
+    ASN 不再 emit 进 functions/_data/gateTrust.ts（运行时只消费 verified_bot /
+    ip_cidrs，ASN 是 WAF 的输入，见 docs/22 W4-4），所以计数必须从 whitelist.txt
+    现读；继续对生成物做正则只会读到 0。ip_cidrs 仍以生成物为准，顺便能发现
+    “白名单改了但没重新 build”的漂移。
+    """
+    whitelist = read(os.path.join(BASE_DIR, "data", "whitelist.txt"))
+    asns = {
+        int(match.group(1))
+        for match in re.finditer(r"^ASN/(\d{1,10})\s*$", whitelist, re.I | re.M)
+    }
     text = read(os.path.join(BASE_DIR, "functions", "_data", "gateTrust.ts"))
-    asns = re.search(r'"low_risk_asns":\s*\[([^\]]*)\]', text)
     cidrs = re.search(r'"ip_cidrs":\s*\[(.*?)\]\s*\}', text, re.S)
     return {
         "verified_bot": '"verified_bot": true' in text,
-        "asns": len(re.findall(r"\d+", asns.group(1))) if asns else 0,
+        "asns": len(asns),
         "ip_cidrs": len(re.findall(r"\[", cidrs.group(1))) if cidrs else 0,
     }
 
 
 def cache_facts() -> dict:
+    """页面缓存头：逐条指令解析，缺哪条就说哪条缺，绝不伪造 0。
+
+    以前这里用一条写死的正则把 `max-age / s-maxage / swr` 三段一口气匹配下来，
+    任一段缺失（例如按 W2-1 拍板去掉 `s-maxage`）就整条失配，然后回退成
+    `0/0/0` —— 于是校验反过来要求 README 写「s-maxage=0」，把解析器的 bug
+    变成了文档的错。现在按指令取值：没有的键就是 None，`check()` 只校验
+    真正存在的指令。
+    """
     text = read(os.path.join(BASE_DIR, "functions", "_middleware.ts"))
-    header = re.search(r'"public, max-age=(\d+), s-maxage=(\d+), stale-while-revalidate=(\d+)"', text)
+    directive = re.search(r'PAGE_CACHE_CONTROL\s*=\s*"([^"]*)"', text)
+    if not directive:
+        raise RuntimeError("cannot find PAGE_CACHE_CONTROL in functions/_middleware.ts")
+    raw = directive.group(1)
+    if not raw.startswith("public,"):
+        raise RuntimeError(f"unexpected PAGE_CACHE_CONTROL value: {raw!r}")
+
+    values: dict[str, int | None] = {"max-age": None, "s-maxage": None, "stale-while-revalidate": None}
+    for part in raw.split(",")[1:]:
+        key, _, value = part.strip().partition("=")
+        if key in values:
+            if not value.isdigit():
+                raise RuntimeError(f"non-numeric cache directive: {part.strip()!r}")
+            values[key] = int(value)
+
+    if values["max-age"] is None:
+        raise RuntimeError(f"PAGE_CACHE_CONTROL has no max-age: {raw!r}")
+
     vary = re.search(r'PAGE_CACHE_VARY\s*=\s*"([^"]+)"', text)
+    if not vary:
+        raise RuntimeError("cannot find PAGE_CACHE_VARY in functions/_middleware.ts")
     return {
-        "max_age": int(header.group(1)) if header else 0,
-        "s_maxage": int(header.group(2)) if header else 0,
-        "swr": int(header.group(3)) if header else 0,
-        "vary": vary.group(1) if vary else "?",
+        "max_age": values["max-age"],
+        "s_maxage": values["s-maxage"],
+        "swr": values["stale-while-revalidate"],
+        "vary": vary.group(1),
     }
 
 
@@ -193,7 +231,9 @@ def print_repo_facts(facts: dict) -> None:
     print(f"  {'verified_bot':<22} {trust['verified_bot']}")
     cache = facts["cache"]
     print("cache / timeouts")
-    print(f"  {'page cache':<22} max-age={cache['max_age']} s-maxage={cache['s_maxage']} swr={cache['swr']}")
+    s_maxage = "-" if cache["s_maxage"] is None else cache["s_maxage"]
+    swr = "-" if cache["swr"] is None else cache["swr"]
+    print(f"  {'page cache':<22} max-age={cache['max_age']} s-maxage={s_maxage} swr={swr}")
     print(f"  {'vary':<22} {cache['vary']}")
     print(f"  {'siteverify timeout':<22} {facts['timeouts']['siteverify_ms']}ms")
     print(f"  {'jwks ttl':<22} {facts['timeouts']['jwks_ms']}ms")
@@ -269,10 +309,16 @@ def check(facts: dict) -> list[str]:
         if not re.search(rf"`{table_name}`[^)\n]*\({days}d\)", text) and f"`{table_name}` ({days}d)" not in text:
             problems.append(f"retention table does not state {table_name} = {days}d")
 
-    # 缓存头与 Vary
+    # 缓存头与 Vary：只校验**真的存在**的指令，缺的指令不要求文档写「=0」
     cache = facts["cache"]
-    if f"s-maxage={cache['s_maxage']}" not in text:
+    if f"max-age={cache['max_age']}" not in text:
+        problems.append(f"cache header max-age={cache['max_age']} not stated")
+    if cache["s_maxage"] is not None and f"s-maxage={cache['s_maxage']}" not in text:
         problems.append(f"cache header s-maxage={cache['s_maxage']} not stated")
+    if cache["swr"] is not None and f"stale-while-revalidate={cache['swr']}" not in text:
+        problems.append(f"cache header stale-while-revalidate={cache['swr']} not stated")
+    if cache["s_maxage"] is None and "s-maxage" in text:
+        problems.append("README states s-maxage but the page cache header has none")
     if cache["vary"] not in text:
         problems.append(f"Vary header '{cache['vary']}' not stated")
 

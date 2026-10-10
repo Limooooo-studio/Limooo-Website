@@ -43,74 +43,100 @@ description: "Limooo 网站与管理系统（Cloudflare 全无服务器架构）
 
 ```
 ├── src/
-│   ├── config.py          # unified config: paths, languages, domains, DB/IP utils (consumes config-contract.json)
-│   ├── auto_block.py      # manual blocklist.txt → D1 reconciliation (D1 is the authority)
-│   ├── cidr.py            # CIDR parsing helpers
-│   ├── portfolio.py       # portfolio image / thumbnail helpers
-│   ├── render_app.py      # build-time read-only renderer used by src/build.py
-│   ├── services_pricing.py        # CSV-driven price list for services.limooo.cn
-│   ├── build.py           # Pages static build (python3 src/build.py)
-│   ├── static/            # static css/js/fonts + icons/portfolio/QR codes
-│   └── templates/         # Jinja2 page templates
-├── README.md              # this file
-├── LICENSE.md             # AGPL-3.0
-├── data/                  # runtime data (generated; git-ignored except blocklist.txt / whitelist.txt)
-│   ├── blocklist.txt      # auditable snapshot of D1 blocked_ips (D1 is the sole authority)
-│   └── whitelist.txt      # trusted ASNs (low-risk) + fully allowed IPs/CIDRs
-├── secrets/               # secrets & certificates, git-ignored
-│   ├── webauthn.env       # env file read by the deploy scripts
-│   └── apple_account_encryption.key     # Apple Account password encryption key
-├── ops/                   # deployment & ops tooling
-│   ├── deploy.sh          # the single deploy entry point (commit/push + Pages + docs + Worker)
-│   ├── build.sh           # Pages build: venv, contract checks, public/manifest.json
-│   ├── pages_deploy.sh    # Cloudflare Pages build + Wrangler deploy
-│   ├── docs_deploy.sh     # docs.limooo.cn build + deploy (VitePress → Pages project limooo-docs)
-│   ├── docs_headers.py    # generates the docs site `_headers` (CSP hashes + cache)
-│   ├── ci_check.sh        # local replica of .github/workflows/tests.yml
-│   ├── run-tests.sh       # test runner used locally
-│   ├── install_git_hooks.sh       # installs the pre-push hook
-│   ├── readme_facts.py    # re-reads the facts on this page (--check / --live)
-│   ├── migrate_d1.sh      # D1 migrations (--dry-run / --remote)
-│   ├── workers_deploy.sh  # standalone Worker deploys
-│   ├── export_d1.py       # unified D1 import SQL/JSON export (apple-account | blocklist)
-│   ├── prune_d1.py        # manual D1 retention and aggregation (scheduled retention runs in status-worker)
-│   ├── d1_client.py       # Cloudflare API client for D1
-│   ├── upload_originals.sh        # private R2 backup of portfolio originals
-│   ├── security-headers.json      # single source of the response-header baseline
-│   ├── tailwind.config.js # Tailwind config for the prebuilt CSS
+│   ├── config.py                                     # unified config: paths, languages, domains, DB/IP utils (consumes config-contract.json)
+│   ├── auto_block.py                                 # manual blocklist.txt → D1 reconciliation (D1 is the authority)
+│   ├── cidr.py                                       # CIDR parsing helpers
+│   ├── portfolio.py                                  # portfolio image / thumbnail helpers
+│   ├── render_app.py                                 # build-time read-only renderer used by src/build.py
+│   ├── services_pricing.py                           # CSV-driven price list for services.limooo.cn
+│   ├── build.py                                      # Pages static build (python3 src/build.py)
+│   ├── static/                                       # static css/js/fonts + icons/portfolio/QR codes
+│   └── templates/                                    # Jinja2 page templates
+├── README.md                                         # this file
+├── LICENSE.md                                        # AGPL-3.0
+├── LICENSE_zh_CN.md                                  # AGPL-3.0 (Simplified Chinese)
+├── LICENSE_ja_JP.md                                  # AGPL-3.0 (Japanese)
+├── LICENSE_ko_KR.md                                  # AGPL-3.0 (Korean)
+├── config-contract.json                              # single source of domains / languages / cookies / TTLs
+├── package.json                                      # npm scripts: build / test / typecheck
+├── package-lock.json                                 # locked Node dependency tree (npm ci)
+├── requirements.lock                                 # pinned Python dependencies (read by ops/build.sh)
+├── wrangler.toml                                     # Cloudflare Pages project + D1 binding
+├── tsconfig.json                                     # TypeScript config for functions/ and the Workers in ops/
+├── vitest.config.ts                                  # vitest config (functions/**/*.test.ts)
+├── pytest.ini                                        # pytest config (tests/)
+├── pyproject.toml                                    # ruff / mypy config
+├── .gitignore                                        # ignore rules shipped with the repository
+├── .github/                                          # GitHub Actions workflows
+│   └── workflows/
+│       └── tests.yml                                 # CI: build, then typecheck / migrations / vitest / pytest
+├── .githooks/                                        # git hooks (installed by ops/install_git_hooks.sh)
+│   └── pre-push                                      # runs ops/ci_check.sh on the commit being pushed
+├── .vscode/                                          # editor settings and recommended extensions
+├── data/                                             # runtime data (generated; git-ignored except blocklist.txt / whitelist.txt)
+│   ├── blocklist.txt                                 # auditable snapshot of D1 blocked_ips (D1 is the sole authority)
+│   └── whitelist.txt                                 # trusted ASNs (low-risk) + fully allowed IPs/CIDRs
+├── secrets/                                          # secrets & certificates, git-ignored
+│   ├── webauthn.env                                  # env file read by the deploy scripts
+│   └── apple_account_encryption.key                  # Apple Account password encryption key
+├── ops/                                              # deployment & ops tooling
+│   ├── deploy.sh                                     # the single deploy entry point (commit/push + Pages + docs + Worker)
+│   ├── build.sh                                      # Pages build: venv, contract checks, public/manifest.json
+│   ├── pages_deploy.sh                               # Cloudflare Pages build + Wrangler deploy
+│   ├── docs_deploy.sh                                # docs.limooo.cn build + deploy (VitePress → Pages project limooo-docs)
+│   ├── docs_headers.py                               # generates the docs site `_headers` (CSP hashes + cache)
+│   ├── ci_check.sh                                   # local replica of .github/workflows/tests.yml
+│   ├── run-tests.sh                                  # test runner used locally
+│   ├── install_git_hooks.sh                          # installs the pre-push hook
+│   ├── readme_facts.py                               # re-reads the facts on this page (--check / --live)
+│   ├── migrate_d1.sh                                 # D1 migrations (--dry-run / --remote)
+│   ├── workers_deploy.sh                             # standalone Worker deploys
+│   ├── export_d1.py                                  # unified D1 import SQL/JSON export (apple-account | blocklist)
+│   ├── prune_d1.py                                   # manual D1 retention and aggregation (scheduled retention runs in status-worker)
+│   ├── d1_client.py                                  # Cloudflare API client for D1
+│   ├── upload_originals.sh                           # private R2 backup of portfolio originals
+│   ├── security-headers.json                         # single source of the response-header baseline
+│   ├── tailwind.config.js                            # Tailwind config for the prebuilt CSS
 │   ├── check_config_contract.py / check_gate_trust.py / check_security_headers.py / check_ip_rays.py / check_ray_id.py / check_visitor_id.py
-│   ├── migrations/        # D1 schema migrations
-│   ├── waf/               # WAF rule snapshots
-│   ├── cloudflare/        # Cloudflare resource inventory (declarative)
-│   ├── email-templates/   # transactional email framework + i18n copy
-│   ├── fonts/             # gate-diagnostic font subset
-│   ├── status-worker/     # Worker: probes, status page, alerting, D1 retention
-│   ├── image-watermark/   # Worker: image.limooo.cn watermark normalizer
-│   ├── d1-archive/        # Worker: D1 snapshot/archive (cron 00:00)
-│   ├── sync-worker/       # Worker: D1 blocked_ips → Cloudflare IP List (cron 03:30)
-│   └── requirements.txt   # Python dependencies
-├── functions/             # Cloudflare Pages Functions
-│   ├── _middleware.ts     # gate/redirect/blocklist/visitors/ray orchestration
-│   ├── _lib/              # config, d1, cidr, gate, access, session, fernet, routing
-│   ├── _data/             # generated i18n/runtime modules (do not hand-edit)
-│   ├── api/               # apple-account, auth, i18n, ray, visitors endpoints
-│   ├── __gate/            # Turnstile verify entry point (/__gate/verify)
-│   └── login.ts / logout.ts
-├── locales/               # i18n / translation catalogs
-├── public/                # Pages build output (git keeps only .gitkeep)
-├── preview/               # local preview (build-generated; git keeps only .gitkeep)
-└── docs/                  # docs.limooo.cn VitePress root + services.limooo.cn price-list CSVs
+│   ├── migrations/                                   # D1 schema migrations
+│   ├── waf/                                          # WAF rule snapshots
+│   ├── cloudflare/                                   # Cloudflare resource inventory (declarative)
+│   ├── email-templates/                              # transactional email framework + i18n copy
+│   ├── fonts/                                        # gate-diagnostic font subset
+│   ├── status-worker/                                # Worker: probes, status page, alerting, D1 retention
+│   ├── image-watermark/                              # Worker: image.limooo.cn watermark normalizer
+│   ├── d1-archive/                                   # Worker: D1 snapshot/archive (cron 00:00)
+│   ├── sync-worker/                                  # Worker: D1 blocked_ips → Cloudflare IP List (cron 03:30)
+│   ├── requirements.txt                              # Python dependencies
+├── functions/                                        # Cloudflare Pages Functions
+│   ├── _middleware.ts                                # gate/redirect/blocklist/visitors/ray orchestration (test: _middleware.test.ts)
+│   ├── _lib/                                         # config, d1, cidr, gate, access, session, fernet, routing
+│   ├── _data/                                        # generated i18n/runtime modules (do not hand-edit)
+│   ├── api/                                          # apple-account, auth, i18n, ray, visitors endpoints
+│   ├── types.d.ts                                    # shared Env / PagesFunction types
+│   └── login.ts / logout.ts                          # Access login callback and logout (tests: *.test.ts)
+├── tests/                                            # pytest suites + fixtures
+├── locales/                                          # i18n / translation catalogs
+├── public/                                           # Pages build output (git keeps only .gitkeep)
+├── preview/                                          # local preview (build-generated; git keeps only .gitkeep)
+└── docs/                                             # docs.limooo.cn VitePress root + services.limooo.cn price-list CSVs
 ```
 
 ## 快速开始
 
 ```bash
-# Install dependencies
-pip install -r ops/requirements.txt
+# 安装 package-lock.json 锁定的 Node 依赖
+npm ci
 
-# Build the static site locally
-python3 src/build.py
+# 构建静态站点（Python 虚拟环境 + 契约校验 + public/ + preview/）
+npm run build
 ```
+
+`npm run build` 就是 `ops/build.sh`：它会创建构建虚拟环境 `.venv-build`、
+运行契约校验，并在渲染前导出 `DYLD_LIBRARY_PATH=$(brew --prefix cairo)/lib`，
+因此不需要任何手工准备。直接跑 `python3 src/build.py` 会跳过这三步 ——
+除非你自己导出那个 Homebrew cairo 路径，否则会以
+`RuntimeError: SVG watermarking requires cairosvg` 失败。
 
 为获得干净的 VS Code 体验，请安装 `.vscode/extensions.json` 中列出的推荐扩展
 （Jinja、Pylance）；工作区设置已关联 Jinja 模板，
@@ -191,7 +217,7 @@ Worker Cron Triggers 形式存在：
 | 调度 | Worker | 任务 |
 | --- | --- | --- |
 | `* * * * *` | `ops/status-worker` | 每分钟执行 HTTP/D1 探针；探针故障期间由 Durable Object alarm 每 10 秒复查一次，并在状态变化时告警 |
-| `47 3 * * *` | `ops/status-worker` | D1 数据保留（`src/retention.ts`）：清理 `ray_log_v2`（7 天）、`visitors_v2`（30 天）、`visitor_rollups`（30 天）、`heartbeats`（30 天）、`events`（90 天）与 `probe_uptime_daily`（90 天） |
+| `47 3 * * *` | `ops/status-worker` | D1 数据保留（`src/retention.ts`）：清理 `ray_log_v2`（7 天）、`visitors_v2`（30 天）、`visitor_rollups`（30 天）、`heartbeats`（30 天）、`events`（90 天）、`probe_uptime_daily`（90 天）与 `auth_sessions`（60 天） |
 | `30 3 * * *` | `ops/sync-worker` | 把生效的 D1 `blocked_ips` 行同步到 Cloudflare IP List `limooo_blocklist` |
 | `0 0 * * *` | `ops/d1-archive` | D1 快照 / 归档 |
 
@@ -322,7 +348,6 @@ ASN 列表来源于 [china-mainland-asn](https://github.com/xingpingcn/china-mai
 - `ops/export_d1.py`：生成 D1 导入 SQL（输出在 `ops/out/`，已被 git 忽略）
 - `ops/migrations/007_visitor_status_indexes.sql`：为访客状态筛选新增 `(status, ts)` 与 `(status, ip_hash, ts)` 索引
 - `ops/sync-worker/`：每日 03:30 的 Worker cron 把生效的 D1 `blocked_ips` 行同步到 Cloudflare IP List；`auto_block.py cf` 仅用于显式的人工维护
-- 注意：Pages 暴露 `POST /logout/backchannel`，并按 `sub` 撤销 D1 `auth_sessions`。
 
 ### 环境变量
 
@@ -425,9 +450,11 @@ ASN 列表来源于 [china-mainland-asn](https://github.com/xingpingcn/china-mai
 - `public/_headers` 为带版本号的静态资源设置带 `stale-while-revalidate`
   的长浏览器缓存；`public/_routes.json` 与 `_headers`
   都由 `src/build.py` 生成。
-- 已验证的公开 HTML 按语言在 Pages Cache API 中缓存 300 秒，
-  响应会声明 `public, max-age=300, s-maxage=300, stale-while-revalidate=3600`
-  并带上 `Vary: Accept-Language, Cookie`。
+- 预渲染的公开 HTML 由**进程内页面缓存**复用（键为 host + 语言），响应声明
+  `public, max-age=300, stale-while-revalidate=3600` 与 `Vary: Accept-Language`。
+  这里**不再声称边缘缓存**：Cloudflare 不缓存 Pages Functions 的响应
+  （同一 URL 连续请求 `cf-cache-status` 恒为 `DYNAMIC`），所以共享缓存的生命周期指令是死配置；
+  语言 cookie 也不放进 `Vary`，否则只会把浏览器缓存切得更碎。
 - 第一方作品集缩略图与 favicon 使用 `images.limooo.cn/static/...`
   （静态边缘缓存，绕过 Functions），而不是水印 Worker；
   二维码与外部热链图片
@@ -445,7 +472,7 @@ ASN 列表来源于 [china-mainland-asn](https://github.com/xingpingcn/china-mai
 
 线上部署的形态，随时可用 `python3 ops/readme_facts.py --live` 重新读取：
 
-1. **Pages**：项目 `limooo`（`limooo.pages.dev`）承载 `limooo.cn`、`www`、`services`、`contact`、`auth`、`visitor`、`account`、`identity`、`images` 与 `redirect`；文档站是独立的 `limooo-docs` 项目（`docs.limooo.cn`），`fonts.limooo.cn` 由 R2 提供
+1. **Pages**：项目 `limooo`（`limooo.pages.dev`）承载 `limooo.cn`、`www`、`services`、`contact`、`auth`、`visitor`、`account`、`images`、`image` 与 `redirect`；文档站是独立的 `limooo-docs` 项目（`docs.limooo.cn`），`fonts.limooo.cn` 由 R2 提供
 2. **D1**：数据库 `limooo`（APAC）以 `DB` 绑定到该项目；`ops/migrations/` 的 schema 已就位，已应用版本记录在 `schema_version`；`apple_accounts` 保存 Apple Account 数据，`blocked_ips` 是封禁权威（83 行、1 行生效 —— 软删除行保留用于审计）
 3. **Secret** 位于 **Pages → Settings → Environment variables → Encrypt**：Turnstile 两个密钥、`GATE_HMAC_KEY`、`SESSION_HMAC_KEY`、`OBSERVABILITY_HMAC_KEY`、`VISITOR_IP_KEY`、`APPLE_ACCOUNT_ENCRYPTION_KEY` 与 `ACCESS_*` 绑定；`APPLEID_ENCRYPTION_KEY` 与两个 `AUTHENTIK_*` 是没有任何运行时代码读取的历史遗留
 4. **Access** 以前置自建应用（self-hosted）保护 `visitor.limooo.cn`、`account.limooo.cn` 与 `admin.limooo.cn`；没有自建 IdP，也没有自定义登录页

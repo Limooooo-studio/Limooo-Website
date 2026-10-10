@@ -16,7 +16,7 @@ You should have received a copy of the GNU Affero General Public License
 along with this program.  If not, see <https://www.gnu.org/licenses/>. #}
 
 <!DOCTYPE html>
-<html lang="zh-cn">
+<html lang="{{ g.lang }}">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport"
@@ -35,8 +35,9 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>. #}
     {% endblock %}
 
     <!-- ── 图标 ── -->
-    <link rel="icon" href="{{ image_asset_base }}/static/icons/Limooo.svg" type="image/svg+xml">
-    <link rel="apple-touch-icon" href="{{ image_asset_base }}/static/icons/Limooo.svg">
+    <!-- ?v= 必须带：/static/*.svg 在 _headers 里是 immutable 一年，换图标后不带版本号会一直吃老缓存 -->
+    <link rel="icon" href="{{ image_asset_base }}/static/icons/Limooo.svg?v=2" type="image/svg+xml">
+    <link rel="apple-touch-icon" href="{{ image_asset_base }}/static/icons/Limooo.svg?v=2">
     <link rel="preconnect" href="{{ image_asset_base }}">
     <link rel="dns-prefetch" href="{{ image_asset_base }}">
     <link rel="preconnect" href="{{ image_watermark_base }}">
@@ -46,8 +47,10 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>. #}
     <link rel="stylesheet" href="/static/tailwind.css?v=4">
 
 <!-- Inter/Baloo 2 自托管字体（与 auth/redirect 页面共用；许可见 static/fonts/LICENSE.txt 与 OFL.txt） -->
-    <!-- Baloo 2 品牌字体预加载：先下载字体再解析样式，配合 swap 减少回退字体闪现 -->
-    <link rel="preload" href="/static/fonts/baloo2/baloo2-latin-wght-normal.woff2" as="font" type="font/woff2" crossorigin>
+    <!-- Baloo 2 品牌字体预加载：先下载字体再解析样式，配合 swap 减少回退字体闪现。
+         ?v= 必须与 fonts-round75.css 里 @font-face 的 url() 一致：/static/*.woff2 是
+         immutable 一年，不带版本号换字体会命中旧缓存（preload 与 CSS 两端都要带）。 -->
+    <link rel="preload" href="/static/fonts/baloo2/baloo2-latin-wght-normal.woff2?v=2" as="font" type="font/woff2" crossorigin>
     <link rel="stylesheet" href="/static/fonts-round75.css?v=2">
 
 <!-- 设计令牌（颜色/圆角/缓动，全站单一事实源；独立页面 auth/redirect 也引用它） -->
@@ -58,7 +61,7 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>. #}
 
     {% block head_links %}{% endblock %}
 </head>
-<body class="antialiased {% block body_class %}{% endblock %}" data-lang="{{ g.lang }}" data-gate-url="{{ gate_url }}" data-image-asset-base="{{ image_asset_base }}" data-image-watermark-base="{{ image_watermark_base }}" data-portfolio-thumbs="{% for item in portfolio_items %}/static/portfolio/thumbs/{{ item.stem }}-640.avif{% if not loop.last %} {% endif %}{% endfor %}" data-i18n-dict='{{ translations | tojson }}'>
+<body class="antialiased {% block body_class %}{% endblock %}" data-lang="{{ g.lang }}" {% include "_lang_attrs.html" %} data-gate-url="{{ gate_url }}" data-image-asset-base="{{ image_asset_base }}" data-image-watermark-base="{{ image_watermark_base }}" data-portfolio-thumbs="{% for item in portfolio_items %}/static/portfolio/thumbs/{{ item.stem }}-640.avif{% if not loop.last %} {% endif %}{% endfor %}" data-i18n-dict='{{ translations | tojson }}'>
 
     <!-- 闪光灯组件（由各页面按需启用，默认隐藏） -->
     {% block flash %}{% endblock %}
@@ -104,10 +107,10 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>. #}
                     <svg class="lang-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
                 </button>
                 <div id="langMenu" class="theme-menu">
-                    <div class="theme-option{% if g.lang == 'zh-cn' %} selected{% endif %}" data-lang="zh-cn" data-action="setLang" data-arg="zh-cn"><span class="lang-flag">🇨🇳</span><span data-i18n="lang_zh">{{ _('lang_zh') }}</span></div>
-                    <div class="theme-option{% if g.lang == 'en-us' %} selected{% endif %}" data-lang="en-us" data-action="setLang" data-arg="en-us"><span class="lang-flag">🇺🇸</span><span data-i18n="lang_en">{{ _('lang_en') }}</span></div>
-                    <div class="theme-option{% if g.lang == 'ja-jp' %} selected{% endif %}" data-lang="ja-jp" data-action="setLang" data-arg="ja-jp"><span class="lang-flag">🇯🇵</span><span data-i18n="lang_ja">{{ _('lang_ja') }}</span></div>
-                    <div class="theme-option{% if g.lang == 'ko-kr' %} selected{% endif %}" data-lang="ko-kr" data-action="setLang" data-arg="ko-kr"><span class="lang-flag">🇰🇷</span><span data-i18n="lang_ko">{{ _('lang_ko') }}</span></div>
+                    {# 语言浮层条目由契约 supported_langs 生成，加语言只改契约 #}
+                    {% for option in lang_options %}
+                    <div class="theme-option{% if g.lang == option.code %} selected{% endif %}" data-lang="{{ option.code }}" data-action="setLang" data-arg="{{ option.code }}"><span class="lang-flag">{{ option.flag }}</span><span data-i18n="{{ option.label_key }}">{{ _(option.label_key) }}</span></div>
+                    {% endfor %}
                 </div>
             </div>
             <span class="nav-divider hidden md:block"></span>

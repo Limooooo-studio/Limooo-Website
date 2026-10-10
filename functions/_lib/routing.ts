@@ -5,6 +5,7 @@ import { contains, normalizeIp } from "./cidr";
 import { GATE_TRUST_IPS, GATE_TRUST_NETWORKS } from "../_data/gateTrust";
 import {
   BASE_URL,
+  DEFAULT_LANG,
   LANG_COOKIE,
   LANG_COOKIE_MAX_AGE,
   PAGE_ROUTES,
@@ -61,6 +62,15 @@ export function getCookie(name: string, header: string | null): string | undefin
   return undefined;
 }
 
+/**
+ * 请求方可控的回跳值里绝不允许出现的字符。
+ *
+ * C0 控制字符（含 CR/LF）与 DEL 一旦进入 `Location`，workerd 构造响应头时
+ * 会抛 `TypeError` → 未捕获 500（门禁验证刚通过却拿不到 cookie）。同时
+ * CR/LF 也是经典的响应头注入载荷，必须在唯一的收口处直接拒绝。
+ */
+const UNSAFE_NEXT_CHARS = /[\u0000-\u001f\u007f]/;
+
 /** 只允许站内相对路径：以 / 开头、拒绝 //、反斜杠和任何协议前缀。 */
 export function safeNextPath(raw: string | null): string {
   if (!raw) return "/";
@@ -68,6 +78,7 @@ export function safeNextPath(raw: string | null): string {
   if (raw.startsWith("//")) return "/";
   if (raw.includes("\\")) return "/";
   if (/^[a-z][a-z0-9+.-]*:/i.test(raw)) return "/";
+  if (UNSAFE_NEXT_CHARS.test(raw)) return "/";
   return raw.slice(0, 2048);
 }
 
@@ -75,6 +86,7 @@ export function safeNextPath(raw: string | null): string {
 export function safeNextUrl(raw: string | null): string {
   const fallback = `${BASE_URL}/`;
   if (!raw || raw.length > 2048) return fallback;
+  if (UNSAFE_NEXT_CHARS.test(raw)) return fallback;
   if (raw.startsWith("/") && !raw.startsWith("//") && !raw.includes("\\")) return raw;
   try {
     const value = new URL(raw);
@@ -145,38 +157,57 @@ export function clientCountryForLogs(request: Request): string {
   return cf?.country ?? "";
 }
 
-/** 语言检测：cookie > Accept-Language(zh/en/ja/ko) > CF 地区(CN/JP/KR) > default。 */
-export function detectLang(request: Request): (typeof SUPPORTED_LANGS)[number] {
+type SupportedLang = (typeof SUPPORTED_LANGS)[number];
+
+/** 语言码的主语言子标签：语言码的第一段（如 zh 部分）。 */
+function primarySubtag(lang: string): string {
+  return lang.split("-")[0];
+}
+
+/** 语言码的地区子标签大写形式（如 CN）；没有地区段时返回空串。 */
+function regionSubtag(lang: string): string {
+  const parts = lang.split("-");
+  return parts.length > 1 ? parts[1].toUpperCase() : "";
+}
+
+/**
+ * 语言检测：cookie > Accept-Language（按契约 supported_langs 匹配）> CF 地区 > 契约默认语言。
+ *
+ * 这里**不写任何语言码字面量**：契约是唯一事实源，加一门语言只需改
+ * `config-contract.json` 的 `supported_langs`——Accept-Language 前缀匹配
+ * （Accept-Language 的首段命中 supported_langs 的首段）与国家码匹配（地区段相同）
+ * 都从语言码自身的子标签推出来。
+ * 兜底值同样取契约的 DEFAULT_LANG：历史实现把它写死成一个语言码字面量，
+ * 于是改契约对边缘行为零影响。
+ */
+export function detectLang(request: Request): SupportedLang {
   const host = (request.headers.get("Host") ?? new URL(request.url).hostname).split(":")[0];
   // 语言 cookie 以 Domain=.limooo.cn 下发，全站共享：主域与所有子域（含
   // visitor / account / status / images 等）都读同一份，切语言后跨子域一致。
   if (host === ROOT_DOMAIN || host.endsWith(`.${ROOT_DOMAIN}`)) {
     const cookie = getCookie(LANG_COOKIE, request.headers.get("Cookie"));
-    if (
-      cookie &&
-      SUPPORTED_LANGS.includes(cookie.toLowerCase() as (typeof SUPPORTED_LANGS)[number])
-    ) {
-      return cookie.toLowerCase() as (typeof SUPPORTED_LANGS)[number];
+    if (cookie && SUPPORTED_LANGS.includes(cookie.toLowerCase() as SupportedLang)) {
+      return cookie.toLowerCase() as SupportedLang;
     }
   }
 
   const accept = request.headers.get("Accept-Language") ?? "";
   for (const part of accept.split(",")) {
-    const p = part.trim().split(";")[0].toLowerCase();
-    if (p.startsWith("zh")) return "zh-cn";
-    if (p.startsWith("en")) return "en-us";
-    if (p.startsWith("ja")) return "ja-jp";
-    if (p.startsWith("ko")) return "ko-kr";
+    const tag = part.trim().split(";")[0].toLowerCase();
+    if (!tag) continue;
+    const exact = SUPPORTED_LANGS.find((lang) => lang === tag);
+    if (exact) return exact as SupportedLang;
+    const primary = primarySubtag(tag);
+    const byPrefix = SUPPORTED_LANGS.find((lang) => primarySubtag(lang) === primary);
+    if (byPrefix) return byPrefix as SupportedLang;
   }
 
-  const byCountry: Record<string, (typeof SUPPORTED_LANGS)[number]> = {
-    CN: "zh-cn",
-    JP: "ja-jp",
-    KR: "ko-kr",
-  };
-  const country = clientCountryForLogs(request);
-  if (country && byCountry[country]) return byCountry[country];
-  return SUPPORTED_LANGS.includes("en-us") ? "en-us" : SUPPORTED_LANGS[0];
+  const country = clientCountryForLogs(request).toUpperCase();
+  if (country) {
+    const byCountry = SUPPORTED_LANGS.find((lang) => regionSubtag(lang) === country);
+    if (byCountry) return byCountry as SupportedLang;
+  }
+  return DEFAULT_LANG as SupportedLang;
 }
 
 /** 语言 cookie（跨 .<root_domain> 子域共享）。 */
@@ -241,4 +272,27 @@ export function isPublicAssetPath(pathname: string): boolean {
 
 export function isApiPath(pathname: string): boolean {
   return pathname.startsWith("/api/");
+}
+
+/**
+ * 应用层封禁的豁免前缀：登录/登出/管理页，避免管理员从被封 IP 无法登录。
+ *
+ * 匹配必须是**精确路径或它的子路径**（`/account`、`/account/apple`），
+ * 不能用 `startsWith("/account")`——那会把未来的 `/account-anything`
+ * 一起放行，等于给攻击者一个免封禁前缀。调用方（中间件）只做这一处判定。
+ */
+export const EXEMPT_PATH_PREFIXES = [
+  "/login",
+  "/logout",
+  "/account",
+  "/visitor",
+  "/api/apple-account",
+  "/api/auth",
+  "/api/ray",
+] as const;
+
+export function isExemptPath(pathname: string): boolean {
+  return EXEMPT_PATH_PREFIXES.some(
+    (prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`),
+  );
 }

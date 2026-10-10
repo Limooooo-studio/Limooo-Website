@@ -5,9 +5,11 @@
 数据源：
     1. Cloudflare GraphQL Analytics API —— 边缘侧记录，能给出**真实客户端 IP**。
        注意：逐请求数据集 httpRequestsAdaptive（唯一含 rayName 的数据集）需要
-       Logpush/Enterprise 级别的字段授权；当前 zone 无权访问 `rayname`，脚本
-       会自动降级到聚合数据集 httpRequestsAdaptiveGroups（免费版可用），
-       按「时间窗 + host + path + 状态码 + 客户端 IP」交叉定位同一请求。
+       Logpush/Enterprise 级别的字段授权；当前 zone 无权访问 `rayname`，脚本在
+       **权限错误**时会自动降级到聚合数据集 httpRequestsAdaptiveGroups
+       （免费版可用），按「时间窗 + host + path + 状态码 + 客户端 IP」交叉定位同一
+       请求；其它失败（网络/超时）不降级，聚合数据集里没有 Ray ID，给不出这个
+       请求的记录，只会如实报错让你重试。
     2. D1 ray_log_v2 / ray_log / events —— 站点自己按 CF-Ray 记录的明细。
        只在 Pages 侧产生，且受保留策略清理，故仅作补充。
 
@@ -155,8 +157,10 @@ def edge_lookup(
 ) -> tuple[list[str], str | None]:
     """边缘侧反查。
 
-    逐请求数据集含 rayName 但当前 zone 无权访问；这里先尝试，失败则退回聚合
-    数据集，用时间窗 + colo 交叉定位。返回 (格式化行, 降级说明)。
+    逐请求数据集含 rayName 但当前 zone 无权访问；**只有**这种权限错误才退回
+    聚合数据集（用时间窗交叉定位候选）。别的失败（网络、超时、GraphQL 报错）
+    不能假装降级：聚合数据集里没有 Ray ID，给不出这个请求的记录，所以如实报错
+    并让调用方重试。返回 (格式化行, 说明)。
     """
     since = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(minutes=minutes)).strftime("%Y-%m-%dT%H:%M:%SZ")
     exact = f'''{{
@@ -174,9 +178,15 @@ def edge_lookup(
             return [render_edge_row(r) for r in groups], None
         return [], None
     except RuntimeError as exc:
-        note = f"edge per-request dataset unavailable ({exc}); falling back to the aggregated dataset."
-        if "rayname" not in str(exc).lower() and "access to the field" not in str(exc).lower():
-            return [], note
+        detail = str(exc).lower()
+        if "rayname" not in detail and "access to the field" not in detail:
+            # 旧文案在这里说「已回退到聚合数据集」，但代码其实直接返回了 ——
+            # 提示语与行为不符（docs/22 W7-12）。现在如实说明没有回退。
+            return [], (
+                f"edge per-request query failed ({exc}); this is not a permission error, "
+                "so no aggregated fallback was attempted (the aggregated dataset has no Ray ID "
+                "and cannot answer this lookup). Retry, or check the Ray ID again later."
+            )
 
     # 聚合降级：没有 Ray ID，只能按时间窗 + colo 给出候选。
     agg = f'''{{

@@ -5,6 +5,8 @@ import { fernetEncrypt } from "../../../_lib/fernet";
 import { requireAdminSession } from "../../../_lib/session";
 import { verifyCsrf } from "../../../_lib/csrf";
 import { parseAccountId, validateUpdatePayload } from "../../../_lib/apple-account";
+import { describeWriteError, isUniqueConflict } from "../../../_lib/apple-account-errors";
+import { logEvent } from "../../../_lib/logging";
 import type { Env } from "../../../_lib/env";
 
 const NO_STORE = { "Cache-Control": "no-store" };
@@ -39,7 +41,16 @@ export const onRequestPut: PagesFunction<Env> = async (context) => {
       "SELECT password FROM apple_accounts WHERE id = ?",
       id,
     );
-    if (!existing.length) return Response.json({ error: "未找到" }, { status: 404, headers: NO_STORE });
+    if (!existing.length) {
+      await logEvent(context.env, "audit_event", context.request, {
+        outcome: "account_update_not_found",
+        status: 404,
+        accountId: id,
+        actorSub: auth.session.sub,
+        message: "apple_account_missing",
+      });
+      return Response.json({ error: "未找到" }, { status: 404, headers: NO_STORE });
+    }
     password = existing[0].password;
   }
 
@@ -53,9 +64,29 @@ export const onRequestPut: PagesFunction<Env> = async (context) => {
       parsed.notes,
       id,
     );
-  } catch {
-    return Response.json({ error: "该邮箱已存在" }, { status: 409, headers: NO_STORE });
+  } catch (err) {
+    // 同 POST：只有真正的 UNIQUE 冲突才是 409（docs/22 W9-6）。
+    const conflict = isUniqueConflict(err);
+    await logEvent(context.env, "audit_event", context.request, {
+      outcome: conflict ? "account_update_conflict" : "account_update_failed",
+      status: conflict ? 409 : 500,
+      accountId: id,
+      actorSub: auth.session.sub,
+      message: conflict ? "apple_account_duplicate_email" : describeWriteError(err),
+    });
+    if (conflict) {
+      return Response.json({ error: "该邮箱已存在" }, { status: 409, headers: NO_STORE });
+    }
+    return Response.json({ error: "写入失败" }, { status: 500, headers: NO_STORE });
   }
+  // 审计里只记「改了什么口令状态」，绝不记口令本身或密文。
+  await logEvent(context.env, "audit_event", context.request, {
+    outcome: ok ? "account_updated" : "account_update_missing",
+    status: ok ? 200 : 404,
+    accountId: id,
+    actorSub: auth.session.sub,
+    message: parsed.passwordChanged ? "password_changed" : "metadata_only",
+  });
   return Response.json({ status: ok ? "ok" : "not found" }, { status: ok ? 200 : 404, headers: NO_STORE });
 };
 
@@ -68,7 +99,35 @@ export const onRequestDelete: PagesFunction<Env> = async (context) => {
     return Response.json({ error: "无权限" }, { status: 403, headers: NO_STORE });
   }
   const existing = await queryAll<{ id: number }>(context.env.DB, "SELECT id FROM apple_accounts WHERE id = ?", id);
-  if (!existing.length) return Response.json({ error: "未找到" }, { status: 404, headers: NO_STORE });
-  const ok = await execute(context.env.DB, "DELETE FROM apple_accounts WHERE id = ?", id);
+  if (!existing.length) {
+    await logEvent(context.env, "audit_event", context.request, {
+      outcome: "account_delete_not_found",
+      status: 404,
+      accountId: id,
+      actorSub: auth.session.sub,
+      message: "apple_account_missing",
+    });
+    return Response.json({ error: "未找到" }, { status: 404, headers: NO_STORE });
+  }
+  let ok = false;
+  try {
+    ok = await execute(context.env.DB, "DELETE FROM apple_accounts WHERE id = ?", id);
+  } catch (err) {
+    await logEvent(context.env, "audit_event", context.request, {
+      outcome: "account_delete_failed",
+      status: 500,
+      accountId: id,
+      actorSub: auth.session.sub,
+      message: describeWriteError(err),
+    });
+    return Response.json({ error: "删除失败" }, { status: 500, headers: NO_STORE });
+  }
+  await logEvent(context.env, "audit_event", context.request, {
+    outcome: ok ? "account_deleted" : "account_delete_missing",
+    status: ok ? 200 : 404,
+    accountId: id,
+    actorSub: auth.session.sub,
+    message: "apple_account_delete",
+  });
   return Response.json({ status: ok ? "ok" : "not found" }, { status: ok ? 200 : 404, headers: NO_STORE });
 };

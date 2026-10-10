@@ -5,6 +5,8 @@ import { fernetEncrypt } from "../../_lib/fernet";
 import { authUnavailableResponse, requireAdminSession, requireAuth } from "../../_lib/session";
 import { verifyCsrf } from "../../_lib/csrf";
 import { maskPassword, validateCreatePayload } from "../../_lib/apple-account";
+import { describeWriteError, isUniqueConflict } from "../../_lib/apple-account-errors";
+import { logEvent } from "../../_lib/logging";
 import type { Env } from "../../_lib/env";
 
 interface Row {
@@ -79,11 +81,35 @@ export const onRequestPost: PagesFunction<Env> = async (context) => {
       parsed.notes,
       sortOrder,
     );
-  } catch {
-    return Response.json({ error: "该邮箱已存在" }, { status: 409, headers: { "Cache-Control": "no-store" } });
-  }
-  if (!ok) {
+  } catch (err) {
+    // 只有真正的 UNIQUE 冲突才是 409。写额度耗尽/绑定失效/网络抖动以前也被报成
+    // 「该邮箱已存在」，真实故障既不记录也不可见（docs/22 W9-6）。
+    const conflict = isUniqueConflict(err);
+    await logEvent(context.env, "audit_event", context.request, {
+      outcome: conflict ? "account_create_conflict" : "account_create_failed",
+      status: conflict ? 409 : 500,
+      actorSub: auth.session.sub,
+      message: conflict ? "apple_account_duplicate_email" : describeWriteError(err),
+    });
+    if (conflict) {
+      return Response.json({ error: "该邮箱已存在" }, { status: 409, headers: { "Cache-Control": "no-store" } });
+    }
     return Response.json({ error: "写入失败" }, { status: 500, headers: { "Cache-Control": "no-store" } });
   }
+  if (!ok) {
+    await logEvent(context.env, "audit_event", context.request, {
+      outcome: "account_create_failed",
+      status: 500,
+      actorSub: auth.session.sub,
+      message: "zero_rows_affected",
+    });
+    return Response.json({ error: "写入失败" }, { status: 500, headers: { "Cache-Control": "no-store" } });
+  }
+  await logEvent(context.env, "audit_event", context.request, {
+    outcome: "account_created",
+    status: 200,
+    actorSub: auth.session.sub,
+    message: "apple_account_create",
+  });
   return Response.json({ status: "ok" }, { headers: { "Cache-Control": "no-store" } });
 };

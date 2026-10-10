@@ -30,6 +30,12 @@ const BATCH = 200;
 // 列表项接口的 per_page 上限是 500；传 1000 会返回 400
 // （code 10027 "invalid or expired cursor"），导致整次同步失败。
 const PAGE_SIZE = 500;
+// items 接口按 cursor 翻页且没有「最后一页」标志；给一个迭代上限，避免
+// 上游行为变化（忽略 cursor、cursor 永不结束）时死循环到 Worker 被杀。
+const MAX_ITEM_PAGES = 20;
+// bulk_operations 轮询：40 次 × 2s ≈ 80s，超时按失败处理（不再静默当成功）。
+const OPERATION_POLLS = 40;
+const OPERATION_POLL_MS = 2000;
 
 export interface SyncResult {
   toAdd: string[];
@@ -77,35 +83,69 @@ async function cf(token: string, method: string, url: string, body?: unknown): P
   return resp.json();
 }
 
+/**
+ * 等待一次 bulk operation 结束。
+ *
+ * 关键点（docs/22 W7-6）：`failed` 与轮询超时都必须**抛错**。此前两者都当成
+ * 正常返回，调用方照样打印 `synced: +N -M`，于是「一条都没写进去」看起来像成功。
+ */
 async function waitOperation(token: string, accountId: string, operationId?: string): Promise<void> {
   if (!operationId) return;
-  for (let i = 0; i < 40; i++) {
+  for (let i = 0; i < OPERATION_POLLS; i++) {
     const resp = await cf(
       token,
       "GET",
       `${API}/accounts/${accountId}/rules/lists/bulk_operations/${operationId}`,
     );
     const status = resp?.result?.status;
-    if (status === "completed" || status === "failed") return;
-    await new Promise((r) => setTimeout(r, 2000));
+    if (status === "completed") return;
+    if (status === "failed") {
+      const detail = resp?.result?.error ?? resp?.errors ?? resp?.result;
+      throw new Error(
+        `CF list bulk operation ${operationId} failed: ${JSON.stringify(detail).slice(0, 200)}`,
+      );
+    }
+    await new Promise((r) => setTimeout(r, OPERATION_POLL_MS));
   }
+  throw new Error(
+    `CF list bulk operation ${operationId} did not finish within ` +
+      `${OPERATION_POLLS} polls (${(OPERATION_POLLS * OPERATION_POLL_MS) / 1000}s)`,
+  );
 }
 
+/**
+ * 读取 IP List 的全部条目。
+ *
+ * 翻页用 `result_info.cursor`（Cloudflare 已不再支持 `page=`；继续传 page 时
+ * 上游会返回同一页，旧实现因此可能死循环）。cursor 不前进或超过
+ * MAX_ITEM_PAGES 时抛错，绝不安静地只同步第一页。
+ */
 async function listItems(token: string, accountId: string, listId: string): Promise<Map<string, string>> {
   const items = new Map<string, string>();
-  let page = 1;
-  for (;;) {
+  let cursor = "";
+  for (let page = 0; page < MAX_ITEM_PAGES; page++) {
+    const query = cursor
+      ? `?per_page=${PAGE_SIZE}&cursor=${encodeURIComponent(cursor)}`
+      : `?per_page=${PAGE_SIZE}`;
     const resp = await cf(
       token,
       "GET",
-      `${API}/accounts/${accountId}/rules/lists/${listId}/items?per_page=${PAGE_SIZE}&page=${page}`,
+      `${API}/accounts/${accountId}/rules/lists/${listId}/items${query}`,
     );
     const result: Array<{ ip: string; id: string }> = resp?.result ?? [];
     for (const item of result) items.set(item.ip, item.id);
-    if (result.length < PAGE_SIZE) break;
-    page++;
+    const next = resp?.result_info?.cursor ?? "";
+    if (!next || !result.length) return items;
+    if (next === cursor) {
+      throw new Error(
+        `list ${listId}: cursor did not advance (${next}); refusing to re-read the same page`,
+      );
+    }
+    cursor = next;
   }
-  return items;
+  throw new Error(
+    `list ${listId}: more than ${MAX_ITEM_PAGES} pages of items; refusing to loop forever`,
+  );
 }
 
 export async function sync(

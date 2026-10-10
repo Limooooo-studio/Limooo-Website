@@ -5,6 +5,7 @@ import { onRequestPut } from "./reorder";
 import { executeBatch, queryAll } from "../../_lib/d1";
 import { authUnavailableResponse, requireAuth } from "../../_lib/session";
 import { verifyCsrf } from "../../_lib/csrf";
+import { logEvent } from "../../_lib/logging";
 import type { Env } from "../../_lib/env";
 
 vi.mock("../../_lib/d1", () => ({ queryAll: vi.fn(), executeBatch: vi.fn() }));
@@ -25,6 +26,7 @@ vi.mock("../../_lib/session", () => ({
   }),
 }));
 vi.mock("../../_lib/csrf", () => ({ verifyCsrf: vi.fn() }));
+vi.mock("../../_lib/logging", () => ({ logEvent: vi.fn() }));
 
 const prepared = {
   bind: vi.fn(() => prepared),
@@ -83,11 +85,51 @@ describe("apple-account reorder API", () => {
     expect((await onRequestPut(context({ order: [1, 1] }) as never)).status).toBe(400);
     expect((await onRequestPut(context({ order: [3] }) as never)).status).toBe(400);
     expect((await onRequestPut(context({ order: "bad" }) as never)).status).toBe(400);
-    expect((await onRequestPut(context({ order: [1], extra: 1 }) as never)).status).toBe(400);
+    expect((await onRequestPut(context({ order: [1, 2], extra: 1 }) as never)).status).toBe(400);
+  });
+
+  it("rejects a partial order so no two rows can share one sort_order", async () => {
+    // 只校验「提交的 id 都存在」时，未提交的行保留旧 sort_order，与提交行产生
+    // 重复值，排序语义变模糊。必须要求提交的集合与库里的集合**完全一致**。
+    vi.mocked(queryAll).mockResolvedValue([{ id: 1 }, { id: 2 }]);
+    const resp = await onRequestPut(context({ order: [1] }) as never);
+    expect(resp.status).toBe(400);
+    expect(await resp.json()).toMatchObject({ error: "无效请求" });
+    expect(vi.mocked(executeBatch)).not.toHaveBeenCalled();
+  });
+
+  it("rejects an order that is a superset of the account ids", async () => {
+    vi.mocked(queryAll).mockResolvedValue([{ id: 1 }, { id: 2 }]);
+    expect((await onRequestPut(context({ order: [1, 2, 3] }) as never)).status).toBe(400);
+  });
+
+  it("still ignores the CSRF result on a partial order (validation first)", async () => {
+    vi.mocked(queryAll).mockResolvedValue([{ id: 1 }, { id: 2 }]);
+    vi.mocked(verifyCsrf).mockResolvedValue(false);
+    const resp = await onRequestPut(context({ order: [1] }) as never);
+    expect([400, 403]).toContain(resp.status);
   });
 
   it("returns 403 when CSRF is invalid", async () => {
     vi.mocked(verifyCsrf).mockResolvedValue(false);
-    expect((await onRequestPut(context({ order: [1] }) as never)).status).toBe(403);
+    // 提交完整的 2 个 id，确保 403 来自 CSRF 而不是集合校验。
+    expect((await onRequestPut(context({ order: [1, 2] }) as never)).status).toBe(403);
+  });
+
+  /** W9-4：排序改的是展示顺序，也属账号变更，必须留审计。 */
+  it("audits a successful reorder and a failed reorder", async () => {
+    vi.mocked(queryAll).mockResolvedValue([{ id: 1 }, { id: 2 }]);
+    const ok = await onRequestPut(context({ order: [2, 1] }) as never);
+    expect(ok.status).toBe(200);
+    const audit = vi.mocked(logEvent).mock.calls.find((call) => call[1] === "audit_event");
+    expect((audit?.[3] as { outcome?: string })?.outcome).toBe("accounts_reordered");
+    expect((audit?.[3] as { actorSub?: string })?.actorSub).toBe("user-1");
+
+    vi.mocked(logEvent).mockClear();
+    vi.mocked(executeBatch).mockResolvedValue(false);
+    const failed = await onRequestPut(context({ order: [2, 1] }) as never);
+    expect(failed.status).toBe(500);
+    const failedAudit = vi.mocked(logEvent).mock.calls.find((call) => call[1] === "audit_event");
+    expect((failedAudit?.[3] as { outcome?: string })?.outcome).toBe("accounts_reorder_failed");
   });
 });

@@ -68,8 +68,13 @@ LIMOOO_PUBLIC_DIR="$PUBLIC_DIR" LIMOOO_PREVIEW_DIR="$PREVIEW_DIR" "$VENV_PYTHON"
 
 if [ ! -f "$PUBLIC_DIR/manifest.json" ]; then
     echo "FATAL: $PUBLIC_DIR/manifest.json missing after build" >&2
+    echo "       a half-finished build would publish whatever is in $PUBLIC_DIR;" >&2
+    echo "       rerun the build and check the log for the failing step." >&2
     exit 1
 fi
+# manifest 存在还不够：内容必须与目录里每个文件逐字节对得上（构建之后被手改、
+# 多放或漏放的文件都在这里拦下）。同时兜住“构建产物被别的进程改过”这种情况。
+LIMOOO_PUBLIC_DIR="$PUBLIC_DIR" "$VENV_PYTHON" src/build.py --verify-manifest
 echo "[pages] artifact: $(find "$PUBLIC_DIR" -type f | wc -l | tr -d ' ') files"
 
 # ── 部署前校验 ──────────────────────────────────────────────────────

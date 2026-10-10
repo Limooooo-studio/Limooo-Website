@@ -41,7 +41,31 @@ function ipv4BytesToIp(bytes: number[]): string {
   return bytes.join(".");
 }
 
+/**
+ * IPv4-mapped IPv6（`::ffff:a.b.c.d`）的 dotted-quad 形式。
+ *
+ * 判定条件与 CPython `ipaddress.IPv6Address.ipv4_mapped` 完全一致：
+ * 前 80 位为 0 且第 6 组为 `ffff`。注意 `::ffff:0:1.2.3.4` 的字节是
+ * `…:0000:ffff:0000:0102:0304`，第 6 组不是 `ffff`，**不算** mapped，
+ * CPython 也把它渲染成 `::ffff:0:102:304`。只有真的 mapped 才折叠成点分。
+ */
+function ipv4MappedString(bytes: number[]): string | null {
+  for (let i = 0; i < 10; i++) {
+    if (bytes[i] !== 0) return null;
+  }
+  if (bytes[10] !== 0xff || bytes[11] !== 0xff) return null;
+  return `::ffff:${ipv4BytesToIp(bytes.slice(12, 16))}`;
+}
+
 function ipv6BytesToIp(bytes: number[]): string {
+  // 必须先折叠 v4-mapped：Python 侧 `src/cidr.py` 用
+  // `ipaddress.ip_address(...).compressed`，对 mapped 地址输出 `::ffff:1.2.3.4`。
+  // 以前这里输出 `::ffff:102:304`，于是 Python 写进 `blocked_ips` 的
+  // (network, prefix) 与 Worker 侧生成的候选串**永不相等**，封禁静默失效
+  // （fail-open），白名单侧同理。两端规范化结果必须逐字符相同。
+  const mapped = ipv4MappedString(bytes);
+  if (mapped) return mapped;
+
   const groups: string[] = [];
   for (let i = 0; i < 8; i++) {
     groups.push(((bytes[i * 2] << 8) | bytes[i * 2 + 1]).toString(16));

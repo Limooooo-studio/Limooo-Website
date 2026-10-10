@@ -15,7 +15,10 @@
   "include": [
     "functions/**/*.ts",
     "functions/**/*.d.ts",
-    "ops/sync-worker/src/**/*.ts"
+    "ops/workers.d.ts",
+    "ops/sync-worker/src/**/*.ts",
+    "ops/status-worker/src/**/*.ts",
+    "ops/d1-archive/src/**/*.ts"
   ],
   "exclude": [
     "**/* 2.ts",

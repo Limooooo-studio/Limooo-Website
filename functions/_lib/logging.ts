@@ -5,12 +5,21 @@
  * 日志写入失败不影响业务请求。
  */
 
-import { execute } from "./d1";
+import { execute, executeBatch } from "./d1";
 import type { Env } from "./env";
 import { clientCountryForLogs, clientIpForLogs } from "./routing";
 import { hmacSha256Hex } from "./crypto";
 
 let eventSchemaReady = false;
+/**
+ * 上次尝试建表的时间戳（毫秒）。
+ *
+ * 只记「成功」是不够的：D1 配额耗尽/绑定失效期间每一句 DDL 都必然失败，旧写法
+ * 于是让**每个**请求都先打一批失败往返，把一次故障放大成 N 次（docs/22 W9-19）。
+ * 现在记住「已尝试」，每个 isolate 每分钟最多重试一次。
+ */
+let eventSchemaAttemptAt = 0;
+const SCHEMA_RETRY_COOLDOWN_MS = 60_000;
 const MAX_LOG_MESSAGE_LENGTH = 500;
 
 const SENSITIVE_KEY_RE = /(password|passwd|token|secret|authorization|api[_-]?key|access[_-]?key|cookie|session)/i;
@@ -33,9 +42,20 @@ export interface LogEventFields {
   actorSub?: string;
 }
 
-/** 每个 isolate 首次写入前幂等建表，避免依赖人工先执行迁移。 */
+/**
+ * 每个 isolate 首次写入前幂等建表，避免依赖人工先执行迁移。
+ *
+ * 两条约束（docs/22 W9-19）：
+ * 1. 记住的是「**已尝试**」而不是「已成功」：D1 故障期间不能让每个请求都先打一批
+ *    必然失败的 DDL，否则一次故障被放大成 N 次；失败后每分钟最多重试一次。
+ * 2. 四条 DDL 走**一次** `db.batch` 往返，而不是四次串行 `run()`。
+ *    只有 `db.batch` 不存在（老驱动/测试桩）时才退回逐句执行。
+ */
 async function ensureEventSchema(env: Env): Promise<void> {
   if (eventSchemaReady || !env.DB) return;
+  const now = Date.now();
+  if (now - eventSchemaAttemptAt < SCHEMA_RETRY_COOLDOWN_MS) return;
+  eventSchemaAttemptAt = now;
   const ddl = [
     `CREATE TABLE IF NOT EXISTS events (
       id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -59,12 +79,20 @@ async function ensureEventSchema(env: Env): Promise<void> {
     "CREATE INDEX IF NOT EXISTS idx_events_request_id ON events (request_id)",
   ];
   try {
+    const db = env.DB;
+    if (db.batch) {
+      // executeBatch 在 batch 抛错时返回 false，不会把异常抛出来。
+      if (await executeBatch(db, ddl.map((sql) => db.prepare(sql)))) {
+        eventSchemaReady = true;
+      }
+      return;
+    }
     for (const sql of ddl) {
       if (!(await execute(env.DB, sql))) return;
     }
     eventSchemaReady = true;
   } catch {
-    // D1 尚未就绪时下一请求重试，不影响业务。
+    // D1 尚未就绪时等冷却窗口过后重试，不影响业务。
   }
 }
 

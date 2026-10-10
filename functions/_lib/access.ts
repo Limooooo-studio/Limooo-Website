@@ -140,10 +140,23 @@ async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: numbe
   }
 }
 
-async function fetchJwks(env: Env): Promise<JwkLike[] | { error: string }> {
+/**
+ * 拉取并缓存签名密钥。
+ *
+ * `force` 用于 kid 未命中时**绕过 TTL 重拉一次**：Cloudflare 每 6 周轮换签名
+ * 密钥，缓存 1 h 内新 kid 完全不在手里。不重拉的话轮换后新 token 全部判无效
+ * （`/login` 401、受保护子域无限 302），最长持续一小时。重拉失败时仍回退到
+ * 旧缓存，不能因为一次网络抖动就让所有人登录失败。
+ */
+async function fetchJwks(env: Env, force = false): Promise<JwkLike[] | { error: string }> {
   const url = accessJwksUrl(env);
   if (!url) return { error: "missing_ACCESS_TEAM_DOMAIN" };
-  if (jwksCache && jwksCache.url === url && Date.now() - jwksCache.fetchedAt < JWKS_TTL_MS) {
+  if (
+    !force &&
+    jwksCache &&
+    jwksCache.url === url &&
+    Date.now() - jwksCache.fetchedAt < JWKS_TTL_MS
+  ) {
     return jwksCache.keys;
   }
   try {
@@ -212,9 +225,19 @@ export async function verifyAccessJwt(
   // 只接受 RS256；显式拒绝 alg:none 与任何降级算法。
   if (header.alg !== "RS256") return null;
 
-  const jwks = await fetchJwks(env);
+  const pickKey = (keys: JwkLike[]): JwkLike | undefined =>
+    keys.find((item) => (header.kid ? item.kid === header.kid : item.kty === "RSA"));
+
+  let jwks = await fetchJwks(env);
   if (!Array.isArray(jwks)) return null;
-  const key = jwks.find((item) => (header.kid ? item.kid === header.kid : item.kty === "RSA"));
+  let key = pickKey(jwks);
+  if (!key && header.kid) {
+    // kid 未命中：可能是 Cloudflare 刚轮换密钥，而我们的缓存还没过期。
+    // 绕过 TTL 重拉一次再判定，避免轮换后的最长 1 小时登录中断。
+    jwks = await fetchJwks(env, true);
+    if (!Array.isArray(jwks)) return null;
+    key = pickKey(jwks);
+  }
   if (!key) return null;
 
   let signature: Uint8Array;

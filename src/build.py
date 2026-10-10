@@ -36,19 +36,59 @@ except (ImportError, OSError):
 
 
 from config import (
+    APPLE_ACCOUNT_HOST,
     BASE_DIR,
+    CONTACT_HOST,
     GATE_HOST,
+    IMAGE_ASSET_HOST,
+    IMAGE_WATERMARK_HOST,
+    KEY_FALLBACK_LANG,
     LOCALES_DIR,
     PREVIEW_DIR,
     PUBLIC_DIR,
     REDIRECT_PRELOAD_IMAGES,
     ROOT_DOMAIN,
+    SERVICES_HOST,
     STATIC_DIR,
     SUPPORTED_LANGS as LANGS,
+    VISITOR_HOST,
     load_translations,
 )
 
 FUNCTIONS_DIR = os.path.join(BASE_DIR, "functions")
+
+def preview_localization_patterns() -> dict[str, re.Pattern[str]]:
+    """预览产物本地化用的正则：域名一律由契约常量现算。
+
+    历史实现把根域名/图片域名手写成一组转义过的域名字面量正则，改契约也不跟随；
+    这里每次调用都从 ROOT_DOMAIN / IMAGE_ASSET_HOST / IMAGE_WATERMARK_HOST 构造，
+    所以「改域名只改 config-contract.json」对预览同样成立。
+    """
+    return {
+        "asset": re.compile(
+            r'(src|href|data-qr)="https://(?:'
+            + "|".join(
+                [
+                    re.escape(ROOT_DOMAIN) + r"/static",
+                    re.escape(IMAGE_ASSET_HOST) + r"/static",
+                    re.escape(IMAGE_WATERMARK_HOST),
+                ]
+            )
+            + r")/"
+        ),
+        "root_href": re.compile(rf'href="https://{re.escape(ROOT_DOMAIN)}/?'),
+        "root_url": re.compile(rf"url=https://{re.escape(ROOT_DOMAIN)}/"),
+    }
+
+
+def preview_subdomain_pages() -> tuple[tuple[str, str], ...]:
+    """预览里「子域页面 → 本地文件名」的映射，子域主机名同样来自契约。"""
+    return (
+        (SERVICES_HOST, "services.html"),
+        (CONTACT_HOST, "contact.html"),
+        (VISITOR_HOST, "visitor.html"),
+        (APPLE_ACCOUNT_HOST, "apple-account.html"),
+    )
 
 
 CONTRACT_PATH = os.path.join(BASE_DIR, "config-contract.json")
@@ -61,10 +101,16 @@ PORTFOLIO_THUMB_AVIF_QUALITY = 55
 # 它们不是站点资源；构建时统一跳过，避免误部署到 public/。
 _PARALLEL_ARTIFACT_RE = re.compile(r"\s\d+\.(?:ts|js|py|sql|json|md|map)$")
 
+# 只给 Tailwind CLI 当输入用的源码文件，不随站点发布：
+# 线上 /static/tailwind.input.css 只是 59 字节的 @tailwind 指令，
+# 发出去既没用又暴露构建细节（预编译产物是 tailwind.css）。
+_STATIC_EXCLUDE_NAMES = frozenset({"tailwind.input.css"})
+
 
 def _static_ignore(dirpath: str, names: list[str]) -> set[str]:
     del dirpath
     ignored = {".DS_Store", "__pycache__"}
+    ignored.update(_STATIC_EXCLUDE_NAMES.intersection(names))
     ignored.update(
         name for name in names
         if name.endswith((".bak", ".orig", ".rej"))
@@ -185,21 +231,64 @@ GATE_I18N_KEYS = (
 )
 
 
+# 跳转页共享文案（functions/_data/runtime.ts）；footer_* 与门禁页共用同一批键。
+REDIRECT_I18N_KEYS = (
+    ("title", "redirect_title"),
+    ("text", "redirect_text"),
+    ("footer_rights", "footer_rights"),
+    ("footer_source", "footer_source"),
+    ("footer_source_link", "footer_source_link"),
+)
+
+
+def _require_locale_keys(
+    lang: str, keys: tuple[tuple[str, str], ...]
+) -> dict[str, str]:
+    """按「输出键 → locale 键」读取某语言的文案；缺键或空值即 RuntimeError。
+
+    门禁页与跳转页共享这一份收口：历史实现里跳转页对 redirect_title /
+    redirect_text 用了中文字面量兜底，某个 locale 丢了键就会在英/日/韩跳转页
+    静默显示简体中文，而构建照样全绿。缺键属于契约破损，只能构建失败。
+    """
+    path = os.path.join(LOCALES_DIR, f"{lang}.json")
+    data = load_translations()[lang]
+    texts: dict[str, str] = {}
+    for output_key, locale_key in keys:
+        value = data.get(locale_key)
+        if not isinstance(value, str) or not value:
+            raise RuntimeError(f"{path} is missing required locale field: {locale_key}")
+        texts[output_key] = value
+    return texts
+
+
+def validate_locale_completeness(
+    translations: dict[str, dict[str, str]] | None = None
+) -> None:
+    """每种语言都必须覆盖 key_fallback_lang 的全部键，否则构建失败。
+
+    HTML 页脚（_footer.html 的 footer_rights / footer_source / footer_source_link）
+    走模板里的 `_()`：找不到键时会回退到 key_fallback_lang，于是英文页面会静默
+    显示中文。只有把「缺键」变成构建失败，契约才真正生效。
+    """
+    translations = translations if translations is not None else load_translations()
+    reference = translations[KEY_FALLBACK_LANG]
+    for lang, data in translations.items():
+        if lang == KEY_FALLBACK_LANG:
+            continue
+        missing = sorted(set(reference) - set(data))
+        if missing:
+            path = os.path.join(LOCALES_DIR, f"{lang}.json")
+            preview = ", ".join(missing[:10])
+            more = f" (+{len(missing) - 10} more)" if len(missing) > 10 else ""
+            raise RuntimeError(
+                f"{path} is missing {len(missing)} key(s) present in "
+                f"{KEY_FALLBACK_LANG}.json: {preview}{more}"
+            )
+
+
 def _load_gate_i18n() -> dict[str, dict[str, str]]:
     """从 locales/*.json 读取门禁文案，替代 build.py 中的硬编码字典。"""
-    translations = load_translations()
-    result: dict[str, dict[str, str]] = {}
-    for lang in LANGS:
-        data = translations[lang]
-        path = os.path.join(LOCALES_DIR, f"{lang}.json")
-        texts = {}
-        for output_key, locale_key in GATE_I18N_KEYS:
-            value = data.get(locale_key)
-            if not isinstance(value, str) or not value:
-                raise RuntimeError(f"{path} is missing gate text field: {locale_key}")
-            texts[output_key] = value
-        result[lang] = texts
-    return result
+    return {lang: _require_locale_keys(lang, GATE_I18N_KEYS) for lang in LANGS}
 
 GATE_I18N = _load_gate_i18n()
 
@@ -220,8 +309,7 @@ def render_page(appmod, template: str, path: str, lang: str, extra=None) -> str:
     with app.test_request_context(path, headers={"Host": ROOT_DOMAIN}):
         g.lang = lang
         html = render_template(template, **kwargs)
-    # 模板中 lang 固定为合法静态值以通过静态检查；构建时替换为实际语言
-    html = html.replace("<html lang=\"zh-cn\">", f"<html lang=\"{lang}\">", 1)
+    # 语言由模板里的 <html lang="{{ g.lang }}"> 直接渲染，这里不再做字符串替换。
     # 相对资源统一加根斜杠：模板里是 src="static/..."，在 /zh-cn 这类子路径下
     # 会解析错位，改成 /static/... 后任何路径都正确（配合中间件干净 URL）
     html = html.replace('src="static/', 'src="/static/')
@@ -258,7 +346,7 @@ def render_gate(appmod, lang: str) -> str:
             host="{{host}}",
             next="{{next}}",
         )
-    html = html.replace("<html lang=\"zh-cn\">", f"<html lang=\"{lang}\">", 1)
+    # 语言同样由模板的 <html lang="{{ g.lang }}"> 渲染，不做字符串替换。
     return html
 
 
@@ -361,13 +449,17 @@ def write_i18n_functions() -> None:
             "\n"
             "export const onRequestGet = ({ params }: { params: Record<string, string> }) => {\n"
             "  const lang = String((params as { lang?: string }).lang ?? \"\");\n"
-            "  const dict = translations[lang];\n"
-            "  if (!dict) {\n"
+            "  // 必须用 hasOwnProperty 判定：translations 是普通对象字面量，\n"
+            "  // 直接 translations[lang] 会沿原型链取到 constructor / toString /\n"
+            "  // valueOf / __proto__ 等成员，被判成「支持的语言」后 JSON.stringify\n"
+            "  // 一个函数得到 undefined → 200 空体，还被 max-age=86400 缓存。\n"
+            "  if (!Object.prototype.hasOwnProperty.call(translations, lang)) {\n"
             '    return new Response(JSON.stringify({ error: "unsupported language" }), {\n'
             "      status: 404,\n"
             '      headers: { "Content-Type": "application/json" },\n'
             "    });\n"
             "  }\n"
+            "  const dict = translations[lang];\n"
             "  return new Response(JSON.stringify(dict), {\n"
             "    status: 200,\n"
             '    headers: { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "public, max-age=86400" },\n'
@@ -378,17 +470,9 @@ def write_i18n_functions() -> None:
 
 def write_runtime_functions() -> None:
     """把门禁/跳转页共享文案与预热图片生成 Pages 端独立模块，消除 middleware 重复维护。"""
-    redirect_i18n: dict[str, dict[str, str]] = {}
-    translations = load_translations()
-    for lang in LANGS:
-        d = translations[lang]
-        redirect_i18n[lang] = {
-            "title": d.get("redirect_title", "正在跳转"),
-            "text": d.get("redirect_text", "正在跳转..."),
-            "footer_rights": d.get("footer_rights", "保留所有权利"),
-            "footer_source": d.get("footer_source", "AGPL-3.0"),
-            "footer_source_link": d.get("footer_source_link", "源码"),
-        }
+    # 缺键直接 RuntimeError：不允许用中文字面量兜底（否则英/日/韩跳转页
+    # 会静默显示简体中文而构建全绿）。
+    redirect_i18n = {lang: _require_locale_keys(lang, REDIRECT_I18N_KEYS) for lang in LANGS}
     output = [
         "// 由 build.py 自动生成，勿手改。",
         "export const GATE_I18N: Record<string, Record<string, string>> = "
@@ -507,7 +591,13 @@ def generate_portfolio_thumbs(source_dir=None, output_dir=None) -> int:
             continue
 
         base = os.path.splitext(name)[0]
+        skipped: list[int] = []
         for width in PORTFOLIO_THUMB_WIDTHS:
+            # 只缩不放：源图比档位窄时放大只会得到更糊、更大的文件。
+            # src/static/portfolio/ 不入库、由人管理，档位是给常规 1080px 宽源图定的。
+            if width > image.width:
+                skipped.append(width)
+                continue
             height = round(image.height * width / image.width)
             thumb = image.resize((width, height), resampling)
             out_path = os.path.join(output_dir, f"{base}-{width}.webp")
@@ -528,9 +618,46 @@ def generate_portfolio_thumbs(source_dir=None, output_dir=None) -> int:
                 speed=6,
             )
             count += 1
+        if skipped:
+            print(
+                f"[build] thumbnail skip {name}: widths {skipped} exceed source width {image.width}",
+                flush=True,
+            )
 
     print(f"[build] portfolio thumbnails: {count}", flush=True)
     return count
+
+
+def check_image_prerequisites(source_root=None, wm_path: str | None = None) -> bool:
+    """在动 public/ 之前校验图片前置条件；返回「是否有作品集源图」。
+
+    这些检查原先散在 generate_watermarks 中途：一次缺 cairosvg 的构建会在
+    copytree 复制完原图之后才失败，留下一个含作品集完整原图、可被直接部署的
+    public/（W9-22）。放到 main() 开头先跑，失败就什么都不写。
+    """
+    source_root = source_root or STATIC_DIR
+    wm_path = wm_path or os.path.join(STATIC_DIR, "icons", "Limooo-watermark.svg")
+    portfolio_dir = os.path.join(source_root, "portfolio")
+    has_portfolio = os.path.isdir(portfolio_dir) and any(
+        name.lower().endswith((".png", ".jpg", ".jpeg", ".webp"))
+        for name in os.listdir(portfolio_dir)
+    )
+    if not has_portfolio:
+        return False
+
+    if Image is None or ImageDraw is None:
+        raise RuntimeError(
+            "Pillow is not installed, cannot generate portfolio thumbnails or watermarks. "
+            "Run `pip install -r ops/requirements.txt` before build.py."
+        )
+    if cairosvg is None:
+        raise RuntimeError(
+            "portfolio source images are present but cairosvg (and local libcairo) is missing; "
+            "install it before build.py, or remove src/static/portfolio to build without watermarks"
+        )
+    if not os.path.exists(wm_path):
+        raise FileNotFoundError(f"missing watermark asset: {wm_path}")
+    return True
 
 
 def generate_watermarks(source_root=None, out_root=None) -> int:
@@ -557,35 +684,8 @@ def generate_watermarks(source_root=None, out_root=None) -> int:
 
     # CI runner 不含 gitignore 的 src/static/portfolio：没有源图时无需水印，
     # 跳过而不是失败；只有确实要水印却缺素材/缺依赖时才报错。
-    portfolio_dir = os.path.join(source_root, "portfolio")
-    has_portfolio = os.path.isdir(portfolio_dir) and any(
-        name.lower().endswith((".png", ".jpg", ".jpeg", ".webp"))
-        for name in os.listdir(portfolio_dir)
-    )
-
-    if Image is None or ImageDraw is None:
-        if has_portfolio:
-            raise RuntimeError(
-                "Pillow is not installed, cannot generate portfolio watermarks. Run "
-                "`pip install -r ops/requirements.txt` before build.py."
-            )
-        print("[build] no portfolio files to watermark, skipping watermark generation", flush=True)
-        return 0
-
     wm_path = os.path.join(STATIC_DIR, "icons", "Limooo-watermark.svg")
-
-    if cairosvg is None:
-        if has_portfolio:
-            raise RuntimeError(
-                "SVG watermarking requires cairosvg (and local libcairo)"
-            )
-        print("[build] no portfolio files to watermark, skipping watermark generation", flush=True)
-        return 0
-    if not os.path.exists(wm_path):
-        if has_portfolio:
-            raise FileNotFoundError(
-                "missing watermark asset: src/static/icons/Limooo-watermark.svg"
-            )
+    if not check_image_prerequisites(source_root, wm_path):
         print("[build] no portfolio files to watermark, skipping watermark generation", flush=True)
         return 0
     os.makedirs(out_root, exist_ok=True)
@@ -664,6 +764,12 @@ def remove_public_portfolio_originals(portfolio_dir: str) -> int:
     A2：作品集完整原图不再对外发布，只公开水印变体（/static/wm/portfolio/*）与
     首页缩略图（/static/portfolio/thumbs/*）。该函数同时清掉构建期间可能混入的
     并行副本（如 “IMG_0064 2.webp”）。
+
+    调用时机：紧跟 ``shutil.copytree(STATIC_DIR, public/static)`` 之后，**在任何
+    可能失败的步骤之前**。一次在“删原图”之前中断的构建（缺 cairosvg / 缺水印
+    SVG / Ctrl-C）会留下一个含原始作品图、可被直接部署的 public/，而 wrangler.toml
+    的 pages_build_output_dir 正指向它。水印与缩略图都从源图目录
+    （src/static/portfolio）生成，不读这里的副本，所以提前删除不影响产物。
     """
     # CI 干净 checkout 没原图，public/static/portfolio 可能不存在；缺失即跳过。
     if not os.path.isdir(portfolio_dir):
@@ -684,8 +790,66 @@ def remove_public_portfolio_originals(portfolio_dir: str) -> int:
                 removed += 1
             except OSError as exc:
                 print(f"[build] remove public original skip {name}: {exc}", flush=True)
-    print(f"[build] removed public portfolio originals: {removed}", flush=True)
+    if removed:
+        print(f"[build] removed public portfolio originals: {removed}", flush=True)
     return removed
+
+
+def verify_manifest(out_dir: str | None = None) -> int:
+    """校验 ``manifest.json`` 与实际产物逐字节一致；返回不一致的条目数。
+
+    部署脚本在 ``wrangler pages deploy`` 之前调用（``python src/build.py
+    --verify-manifest``）：此前 manifest 只被检查过“存在”，构建之后目录里被手改、
+    多放或删掉文件都没人发现。缺 manifest 或不一致都算失败（非 0）。
+    """
+    out_dir = out_dir or PUBLIC_DIR
+    manifest_path = os.path.join(out_dir, "manifest.json")
+    try:
+        with open(manifest_path, encoding="utf-8") as handle:
+            manifest = json.load(handle)
+    except OSError:
+        print(
+            f"FATAL: {manifest_path} is missing; run a full build before deploying",
+            file=sys.stderr,
+        )
+        return 1
+    except json.JSONDecodeError as exc:
+        print(f"FATAL: {manifest_path} is not valid JSON: {exc}", file=sys.stderr)
+        return 1
+
+    expected = manifest.get("files")
+    if not isinstance(expected, dict):
+        print(f"FATAL: {manifest_path} has no files map", file=sys.stderr)
+        return 1
+
+    actual: dict[str, str] = {}
+    for root, _dirs, names in os.walk(out_dir):
+        for name in names:
+            path = os.path.join(root, name)
+            rel = os.path.relpath(path, out_dir).replace(os.sep, "/")
+            if rel == "manifest.json":
+                continue
+            actual[rel] = _sha256_file(path)
+
+    missing = sorted(set(expected) - set(actual))
+    extra = sorted(set(actual) - set(expected))
+    changed = sorted(
+        rel for rel in set(expected) & set(actual) if expected[rel] != actual[rel]
+    )
+    problems = len(missing) + len(extra) + len(changed)
+    if problems:
+        print(
+            f"FATAL: {out_dir} does not match manifest.json "
+            f"(missing {len(missing)} / extra {len(extra)} / changed {len(changed)})",
+            file=sys.stderr,
+        )
+        for label, items in (("missing", missing), ("extra", extra), ("changed", changed)):
+            for rel in items[:10]:
+                print(f"  {label}: {rel}", file=sys.stderr)
+        return problems
+
+    print(f"[build] manifest verified: {len(actual)} files match", flush=True)
+    return 0
 
 
 def main() -> int:
@@ -698,10 +862,17 @@ def main() -> int:
         ],
         check=True,
     )
+    # locale 完整性：任何语言缺键都直接失败，不能让英文页面静默回退成中文。
+    validate_locale_completeness()
     # 构建态标记：只读最小 Flask 渲染器，不导入业务 app，不初始化数据库/密钥。
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     os.environ.setdefault("LIMOOO_BUILD", "1")
     from render_app import RENDER_APP as appmod
+
+    # 前置条件先校验，**再动 public/**：Pillow / cairosvg / 水印 SVG 任一缺失时
+    # 半成品目录会留下作品集完整原图，而 wrangler.toml 的 pages_build_output_dir
+    # 正指向 public/（W9-22）。这里失败就什么都不写。
+    check_image_prerequisites()
 
     # 清空并重建输出目录（public/ 为纯生成产物）
     if os.path.isdir(PUBLIC_DIR):
@@ -733,6 +904,13 @@ def main() -> int:
         dirs_exist_ok=True,
         ignore=_static_ignore,
     )
+    # 3.0) A2：copytree 刚把源图复制进来，**立刻**删掉公开 bundle 里的作品集原图。
+    #      必须紧跟 copytree（而不是放在水印/缩略图之后）：水印与缩略图都从源图目录
+    #      生成、不读这里的副本，而任何中途失败都会留下一个含完整原图、可被裸
+    #      `wrangler pages deploy` 直接发布的 public/。
+    remove_public_portfolio_originals(
+        os.path.join(PUBLIC_DIR, "static", "portfolio")
+    )
     # 3.1) 作品集卡片缩略图（首页只加载这些，不再直接下载 1080×1440 原图）
     generate_portfolio_thumbs(
         os.path.join(STATIC_DIR, "portfolio"),
@@ -740,7 +918,7 @@ def main() -> int:
     )
     # 3.2) 水印变体（A2：公开 bundle 只发布水印全图 /static/wm/portfolio/*）
     generate_watermarks(STATIC_DIR, os.path.join(PUBLIC_DIR, "static", "wm"))
-    # 3.3) 移除公开 bundle 里的作品集原图，杜绝 /static/portfolio/<图> 裸链干净原图
+    # 3.3) 兜底：构建期间若又混入原图/并行副本，这里再清一次（无新增则不打日志）
     remove_public_portfolio_originals(
         os.path.join(PUBLIC_DIR, "static", "portfolio")
     )
@@ -784,40 +962,39 @@ def main() -> int:
             os.path.join(STATIC_DIR, "portfolio"),
             _preview_thumbs,
         )
+    # 预览产物固定用中文（本地人工核对用）；真实站点语言列表来自契约
+    # supported_langs，这里只决定 preview/templates/*.html 用哪一份。
     PREVIEW_LANG = "zh-cn"
+    preview_patterns = preview_localization_patterns()
+    preview_pages = preview_subdomain_pages()
     src = os.path.join(PUBLIC_DIR, PREVIEW_LANG)
     for name in os.listdir(src):
         if name.endswith(".html"):
             html = open(os.path.join(src, name), encoding="utf-8").read()
-            # 资源引用本地化：https://limooo.cn/static/... 与
-            # https://images.limooo.cn/static/... 与 image.limooo.cn/...
+            # 资源引用本地化：https://<root_domain>/static/... 与
+            # https://<image_asset_host>/static/... 与 <image_watermark_host>/...
             # → ../static/...
-            # （只替换 HTML 标签属性，不碰 JS 里的绝对 URL）
-            html = re.sub(
-                r'(src|href|data-qr)="https://(?:limooo\.cn/static|images\.limooo\.cn/static|image\.limooo\.cn)/',
-                r'\1="../static/',
-                html,
-            )
+            # （只替换 HTML 标签属性，不碰 JS 里的绝对 URL；
+            #   三个域名都从契约常量构造，不手写 limooo.cn）
+            html = re.sub(preview_patterns["asset"], r'\1="../static/', html)
             # 内联 CSS 里的根路径资源（门禁页 @font-face 的 url(/static/...)）同步本地化
             html = html.replace("url(/static/", "url(../static/")
             html = html.replace(
                 'src="/Limooo-xtext.svg"',
                 'src="../static/icons/Limooo-xtext.svg"',
             )
-            # 站内导航本地化：https://<子域>.limooo.cn → 同目录本地文件
-            for sub, page in (
-                ("services", "services.html"),
-                ("contact", "contact.html"),
-                ("visitor", "visitor.html"),
-                ("apple-account", "apple-account.html"),
-            ):
-                html = re.sub(rf'href="https://{sub}\.limooo\.cn/?', f'href="{page}"', html)
-            html = re.sub(r'href="https://limooo\.cn/?', 'href="index.html"', html)
+            # 站内导航本地化：https://<子域>.<root_domain> → 同目录本地文件
+            # （子域主机名同样来自契约，不手写 limooo.cn）
+            for host, page in preview_pages:
+                html = re.sub(
+                    rf'href="https://{re.escape(host)}/?', f'href="{page}"', html
+                )
+            html = re.sub(preview_patterns["root_href"], 'href="index.html"', html)
             # redirect 预览默认目标也指向本地首页
-            html = re.sub(r'url=https://limooo\.cn/', 'url=index.html', html)
-            html = html.replace('"https://limooo.cn/"', '"index.html"')
+            html = re.sub(preview_patterns["root_url"], "url=index.html", html)
+            html = html.replace(f'"https://{ROOT_DOMAIN}/"', '"index.html"')
             # 门禁/跳转页的运行时注入占位符，在本地预览中填默认值
-            html = html.replace("{{host}}", "limooo.cn")
+            html = html.replace("{{host}}", ROOT_DOMAIN)
             html = html.replace("{{next}}", "/")
             html = html.replace("{{error}}", "")
             html = html.replace("{{preload}}", "[]")
@@ -835,7 +1012,9 @@ def main() -> int:
             with open(os.path.join(PREVIEW_OUT, name), "w", encoding="utf-8") as f:
                 f.write(html)
     # 预览索引（列出所有子域页面，模板在 site/src/templates/preview.html）
-    with appmod.test_request_context("/", headers={"Host": "limooo.cn"}):
+    with appmod.test_request_context("/", headers={"Host": ROOT_DOMAIN}):
+        # 预览索引固定预览语言（模板用 <html lang="{{ g.lang }}">，不再写死 zh-cn）
+        g.lang = PREVIEW_LANG
         index_html = render_template(
             "preview.html",
             pages=[
@@ -873,4 +1052,8 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    # --verify-manifest：只校验现有产物与 manifest.json 是否一致（部署前由
+    # ops/pages_deploy.sh 调用），不做任何构建。
+    if "--verify-manifest" in sys.argv[1:]:
+        sys.exit(verify_manifest())
     sys.exit(main())

@@ -27,6 +27,10 @@
 #
 # So: run this before pushing. Whatever CI runs, this runs.
 #
+# Step set (identical to .github/workflows/tests.yml -- keep both in sync):
+#   typescript: build / typecheck / migrate --dry-run / npm test / coverage (report only)
+#   python:     pytest / security headers / readme_facts.py --check
+#
 # Usage:
 #   bash ops/ci_check.sh                # check the current working tree
 #   bash ops/ci_check.sh --ref=<rev>    # check <rev> in a temporary worktree
@@ -54,7 +58,7 @@ while [ $# -gt 0 ]; do
         --typescript) RUN_PY=0 ;;
         --python) RUN_TS=0 ;;
         --no-build) DO_BUILD=0 ;;
-        --help|-h) sed -n '20,39p' "$0"; exit 0 ;;
+        --help|-h) sed -n '20,43p' "$0"; exit 0 ;;
         *)
             echo "FATAL: unknown argument $1" >&2
             echo "       supported: --ref=<rev> / --typescript / --python / --no-build" >&2
@@ -102,15 +106,23 @@ else
     echo "[ci] checking working tree at $ROOT"
 fi
 
-# ── 守卫 1：iCloud 冲突副本（"build 2.py" 这类）绝不能进仓库 ─────────
+# ── 守卫 1：iCloud 冲突副本（"build 2.py" / ".venv-build 2" 这类）────
+# 冲突副本既可以是文件，也可以是**整个目录**——iCloud 把 `site/.venv-build`
+# 复制成 `site/.venv-build 2` 时只有目录名带序号，`-type f` 永远看不到它。
+# 所以这里用 `\( -type f -o -type d \)` 同时扫，模式统一放在 -name 列表里。
+# 剪枝只针对**正本**目录名（node_modules/.venv-build/...），带序号的副本不在
+# 剪枝名单内，否则又会把它们跳过——这正是旧写法的洞。
 CONFLICTS="$(cd "$TARGET" && find functions src locales tests ops .github \
-    \( -name node_modules -o -name .venv-build -o -name .wrangler \
-       -o -name out -o -name kuma-dist \) -prune -o \
-    -type f \( -name '* [0-9]' -o -name '* [0-9].*' \) -print 2>/dev/null | sort)"
+    \( -type d \( -name node_modules -o -name .venv-build -o -name .wrangler \
+       -o -name out -o -name coverage -o -name .pytest_cache -o -name .ruff_cache \
+       -o -name __pycache__ \) \) -prune -o \
+    \( -type f -o -type d \) \( -name '* [0-9]' -o -name '* [0-9].*' \) -print 2>/dev/null | sort)"
 if [ -n "$CONFLICTS" ]; then
-    echo "[ci] FAIL: iCloud conflict copies detected ('xxx 2.ext'); resolve them before committing:" >&2
+    echo "[ci] FAIL: iCloud conflict copies detected ('xxx 2.ext' / 'xxx 2'); resolve them before committing:" >&2
     echo "$CONFLICTS" | head -20 | sed 's/^/       /' >&2
-    echo "       once confirmed identical to the original, delete: rm -f 'functions/_data/runtime 2.ts' ..." >&2
+    echo "       once confirmed identical to the original:" >&2
+    echo "         rm -f 'functions/_data/runtime 2.ts'" >&2
+    echo "         rm -rf '.venv-build 2' 'node_modules.recovery-20260912-0145'" >&2
     exit 1
 fi
 
@@ -194,12 +206,37 @@ if [ "$RUN_TS" = 1 ]; then
 
     echo "[ci] npm test"
     (cd "$TARGET" && npm test)
+
+    # 覆盖率只报告、不设阈值（W6-3），**这一步永远不决定 CI 成败**：
+    #   - 缺 @vitest/coverage-v8 → 跳过（提示装依赖）；
+    #   - 测试失败时 vitest 不输出覆盖率报告 → 上面 `npm test` 已经拦下了，
+    #     这里再报一次「覆盖率没跑成」只会掩盖真正的失败点；
+    #   - vitest 第二次跑（带 v8 插桩）可能与第一次读数不同（同一进程里的
+    #     模块状态），把这种差异算成闸门失败会变成随机红。
+    # 刻意不写 `if ! npm run ...` —— 那会把 exit 1 变成 0，掩盖真正的失败。
+    if [ ! -d "$TARGET/node_modules/@vitest/coverage-v8" ]; then
+        echo "[ci] SKIP coverage: @vitest/coverage-v8 is not installed (npm ci first)"
+    else
+        echo "[ci] npm run test:coverage (report only, no threshold)"
+        set +e +o pipefail
+        (cd "$TARGET" && npm run test:coverage) || echo "[ci] coverage report unavailable (see the npm test step above for the real result)"
+        set -eo pipefail
+    fi
 fi
 
 if [ "$RUN_PY" = 1 ]; then
     echo "[ci] python job"
     echo "[ci] python -m pytest"
-    (cd "$TARGET" && "$PYTHON_BIN" -m pytest -q)
+    # 覆盖率只报告、不设阈值（W6-3）。pytest-cov 不在 requirements.lock 里，
+    # 所以先探测再决定加不加 --cov；缺了只跳过且不影响退出码。
+    if (cd "$TARGET" && "$PYTHON_BIN" -c 'import pytest_cov' >/dev/null 2>&1); then
+        (cd "$TARGET" && "$PYTHON_BIN" -m pytest -q --cov=src --cov-report=term-missing)
+    else
+        echo "[ci] SKIP coverage: pytest-cov is not installed (pip install pytest-cov)"
+        (cd "$TARGET" && "$PYTHON_BIN" -m pytest -q)
+    fi
+    echo "[ci] python ops/check_security_headers.py"
+    (cd "$TARGET" && "$PYTHON_BIN" ops/check_security_headers.py)
     echo "[ci] python ops/readme_facts.py --check"
     (cd "$TARGET" && "$PYTHON_BIN" ops/readme_facts.py --check)
 fi

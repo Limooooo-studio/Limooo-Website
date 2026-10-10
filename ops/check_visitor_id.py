@@ -175,6 +175,18 @@ def main() -> int:
 
     if args.requests > 0:
         print(f"recent requests (ray_log_v2, up to {args.requests})", flush=True)
+        # docs/22 W7-9：ray_log_v2 没有 (ip_hash, ts DESC) 索引，这条查询是全表扫；
+        # 开扫之前先报出代价，别让排障脚本自己撞上 D1 读取预算。
+        warn(
+            "  "
+            + d1_client.scan_note(
+                cfg,
+                "ray_log_v2",
+                f"ip_hash = '{visitor}'",
+                "no (ip_hash, ts DESC) index; the 7-day detail table is scanned",
+                "The main lookup above uses the (ip_hash, last_ts) index instead; drop --requests to avoid this scan.",
+            )
+        )
         try:
             hits = d1_query_retry(
                 cfg,

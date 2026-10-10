@@ -4,14 +4,14 @@
    Turnstile sitekey、完整 i18n 和错误信息由运行时 /gate/config 与
    {{error}} 占位符注入；CSS/JS 全部外置，不再在 HTML 内维护样式。 #}
 <!doctype html>
-<html lang="zh-cn">
+<html lang="{{ g.lang }}">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex, nofollow">
 <meta name="color-scheme" content="dark light">
-<link rel="icon" href="/static/icons/Limooo.svg" type="image/svg+xml">
-<link rel="apple-touch-icon" href="/static/icons/Limooo.svg">
+<link rel="icon" href="/static/icons/Limooo.svg?v=2" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/static/icons/Limooo.svg?v=2">
 <title data-i18n="title">{{ title }}</title>
 <link rel="stylesheet" href="/static/fonts-round75.css?v=2">
 <script src="/static/js/theme-preload.js?v=2"></script>
@@ -20,7 +20,7 @@
 <!-- 站点基础样式：页脚 .global-footer 等结构样式复用主站 base.css -->
 <link rel="stylesheet" href="/static/css/base.css?v=18">
 </head>
-<body data-lang="{{ lang }}" data-gate-error="{{ error_html }}">
+<body data-lang="{{ lang }}" {% include "_lang_attrs.html" %} data-gate-error="{{ error_html }}">
 <div class="gate-controls">
   <div class="theme-toggle lang-flyout">
     <button class="lang-btn" data-action="toggleLangMenu" data-needs-event aria-haspopup="true" aria-label="{{ lang_aria }}" data-i18n-attr="aria-label:lang_aria">
@@ -28,10 +28,10 @@
       <svg class="lang-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
     </button>
     <div id="langMenu" class="theme-menu">
-      <div class="theme-option{% if lang == 'zh-cn' %} selected{% endif %}" data-lang="zh-cn" data-action="setLang" data-arg="zh-cn"><span class="lang-flag">🇨🇳</span><span>简体中文</span></div>
-      <div class="theme-option{% if lang == 'en-us' %} selected{% endif %}" data-lang="en-us" data-action="setLang" data-arg="en-us"><span class="lang-flag">🇺🇸</span><span>English</span></div>
-      <div class="theme-option{% if lang == 'ja-jp' %} selected{% endif %}" data-lang="ja-jp" data-action="setLang" data-arg="ja-jp"><span class="lang-flag">🇯🇵</span><span>日本語</span></div>
-      <div class="theme-option{% if lang == 'ko-kr' %} selected{% endif %}" data-lang="ko-kr" data-action="setLang" data-arg="ko-kr"><span class="lang-flag">🇰🇷</span><span>한국어</span></div>
+      {# 语言浮层条目由契约 supported_langs 生成；文案键 lang_<主语言> #}
+      {% for option in lang_options %}
+      <div class="theme-option{% if lang == option.code %} selected{% endif %}" data-lang="{{ option.code }}" data-action="setLang" data-arg="{{ option.code }}"><span class="lang-flag">{{ option.flag }}</span><span>{{ _(option.label_key) }}</span></div>
+      {% endfor %}
     </div>
   </div>
   <button class="appearance-switch" type="button" role="switch" aria-checked="false" aria-label="{{ theme_aria }}" data-i18n-attr="aria-label:theme_aria" data-action="toggleTheme">

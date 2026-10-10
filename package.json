@@ -7,11 +7,13 @@
   "scripts": {
     "test": "vitest run && node --test ops/image-watermark/src/index.test.js",
     "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage --coverage.include='functions/**/*.ts' --coverage.include='ops/sync-worker/src/**/*.ts' --coverage.include='ops/status-worker/src/**/*.ts' --coverage.include='ops/d1-archive/src/**/*.ts' --coverage.exclude='**/*.test.ts' --coverage.exclude='functions/_data/**' --coverage.exclude='**/__mocks__/**' --coverage.reporter=text --coverage.reporter=json-summary --coverage.reportsDirectory=/tmp/limooo-coverage",
     "typecheck": "tsc --noEmit",
     "build": "bash ops/build.sh"
   },
   "devDependencies": {
     "@types/node": "26.4.0",
+    "@vitest/coverage-v8": "3.2.7",
     "typescript": "7.0.2",
     "vitest": "3.2.7",
     "wrangler": "4.127.0"

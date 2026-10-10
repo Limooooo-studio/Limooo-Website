@@ -16,8 +16,18 @@ def test_aggregate_sql_targets_v2_and_daily() -> None:
     sql = prune_d1._aggregate_sql()
     assert "FROM visitors_v2" in sql
     assert "FROM visitor_rollups" in sql
-    assert "INSERT OR REPLACE INTO visitors_daily" in sql
+    assert "INTO visitors_daily" in sql
     assert "ip_hash" in sql
+
+
+def test_aggregate_upserts_instead_of_replacing() -> None:
+    """W7-5：`INSERT OR REPLACE` 会先删掉冲突行，只覆盖部分小时的滚动窗口
+    于是把「昨天那一行」的较早小时数永久改小；必须是单调推进的 upsert。"""
+    sql = prune_d1._aggregate_sql()
+    assert "INSERT OR REPLACE" not in sql
+    assert "ON CONFLICT (day, country, page_slug, status) DO UPDATE SET" in sql
+    assert "MAX(unique_ips, excluded.unique_ips)" in sql
+    assert "MAX(requests, excluded.requests)" in sql
 
 
 def test_aggregate_daily_does_not_count_entire_daily_table(monkeypatch) -> None:
@@ -79,4 +89,24 @@ def test_dry_run_reports_counts_without_deleting(monkeypatch) -> None:
     assert plan["buckets"]["visitor_rollups"] == 3
     assert plan["buckets"]["events"] == 3
     assert plan["aggregate_rows"] == 3
-    assert any("DELETE" not in sql for sql in calls)
+    # any() would pass as soon as ONE of the statements is not a DELETE, which is
+    # exactly what dry-run must guarantee for ALL of them.
+    assert all("DELETE" not in sql for sql in calls)
+
+
+def test_dry_run_only_issues_selects(monkeypatch) -> None:
+    """dry-run is the mode operators point at production: it must never mutate."""
+    calls: list[str] = []
+
+    def fake_query(cfg, sql: str):
+        calls.append(sql)
+        return [{"count": 0}]
+
+    monkeypatch.setattr(prune_d1, "d1_query", fake_query)
+    for mode in ("all", "prune", "aggregate"):
+        prune_d1.dry_run({"token": "t", "account_id": "a", "database_id": "d"}, mode)
+
+    assert calls, "dry_run issued no query at all"
+    mutating = [sql for sql in calls if not sql.lstrip().upper().startswith("SELECT")]
+    assert not mutating, f"dry_run sent non-SELECT statements: {mutating}"
+

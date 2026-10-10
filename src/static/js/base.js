@@ -1,4 +1,23 @@
-document.documentElement.lang = document.body.getAttribute('data-lang') || 'zh-cn';
+/* 跨端契约事实全部由 build.py 注入 <body data-*>（模板 _lang_attrs.html），
+   前端只读、不写死：加语言 / 改 cookie 名或 TTL 只改 config-contract.json。 */
+var BODY = document.body;
+function bodyAttr(name, fallback) {
+    var value = BODY && BODY.getAttribute(name);
+    return value === null || value === undefined || value === '' ? (fallback || '') : value;
+}
+var DEFAULT_LANG = bodyAttr('data-default-lang', 'en-us');
+var SUPPORTED_LANGS = bodyAttr('data-supported-langs').split(/\s+/).filter(function (code) { return code; });
+var ROOT_DOMAIN = bodyAttr('data-root-domain', 'limooo.cn');
+var LANG_COOKIE = bodyAttr('data-lang-cookie', 'user_lang_preference');
+var LANG_COOKIE_MAX_AGE = bodyAttr('data-lang-cookie-max-age', '31536000');
+var THEME_COOKIE = bodyAttr('data-theme-cookie', 'limooo_theme');
+var THEME_COOKIE_MAX_AGE = bodyAttr('data-theme-cookie-max-age', '31536000');
+function sharedCookieDomain() {
+    return location.hostname === ROOT_DOMAIN || location.hostname.endsWith('.' + ROOT_DOMAIN)
+        ? '; domain=.' + ROOT_DOMAIN
+        : '';
+}
+document.documentElement.lang = bodyAttr('data-lang', DEFAULT_LANG);
 
 /* ═══════════════════════════════════════════════════════════════
        图片预加载（仅预加载二维码等小资源；带 loading="lazy" 的作品图
@@ -41,16 +60,16 @@ document.documentElement.lang = document.body.getAttribute('data-lang') || 'zh-c
     function effectiveTheme() {
         var saved = localStorage.getItem('theme');
         if (saved === 'light' || saved === 'dark') return saved;
-        var match = document.cookie.match(/(?:^|;\s*)limooo_theme=(light|dark)/);
+        var match = document.cookie.match(new RegExp('(?:^|;\\s*)' + THEME_COOKIE + '=(light|dark)'));
         return match ? match[1] : getSystemTheme();
     }
 
     /* 同步写入跨子域共享 cookie，保证主站/auth/redirect 的深浅模式一致 */
     function saveTheme(theme) {
         localStorage.setItem('theme', theme);
-        var domain = location.hostname.endsWith('limooo.cn') ? '; domain=.limooo.cn' : '';
         var secure = location.protocol === 'https:' ? '; Secure' : '';
-        document.cookie = 'limooo_theme=' + theme + '; path=/; max-age=31536000; SameSite=Lax' + secure + domain;
+        document.cookie = THEME_COOKIE + '=' + theme + '; path=/; max-age=' + THEME_COOKIE_MAX_AGE
+            + '; SameSite=Lax' + secure + sharedCookieDomain();
     }
 
     /* 快速切换检测：1 秒内超过 3 次时强制跳 auth.limooo.cn 验证页（验证页自身不参与触发） */
@@ -105,7 +124,7 @@ document.documentElement.lang = document.body.getAttribute('data-lang') || 'zh-c
        - applyLang():纯前端切换,重写带 data-i18n 标记的元素,不刷新页面
        ═══════════════════════════════════════════════════════════════ */
     var I18N = JSON.parse(document.body.getAttribute('data-i18n-dict') || '{}');
-    var CURRENT_LANG = document.body.getAttribute('data-lang') || 'zh-cn';
+    var CURRENT_LANG = bodyAttr('data-lang', DEFAULT_LANG);
     var I18N_CACHE = window.I18N_CACHE || {};
     I18N_CACHE[CURRENT_LANG] = I18N;
 
@@ -185,11 +204,11 @@ document.documentElement.lang = document.body.getAttribute('data-lang') || 'zh-c
         });
     }
 
-    /* 写入 365 天语言 cookie(跨 .limooo.cn 子域共享) */
+    /* 写入语言 cookie（名字 / TTL / 共享域都来自构建注入的 data-*） */
     function saveLangCookie(code) {
-        var domain = location.hostname.endsWith('limooo.cn') ? 'domain=.limooo.cn; ' : '';
         var secure = location.protocol === 'https:' ? '; Secure' : '';
-        document.cookie = 'user_lang_preference=' + code + '; path=/; max-age=31536000; SameSite=Lax' + secure + '; ' + domain;
+        document.cookie = LANG_COOKIE + '=' + code + '; path=/; max-age=' + LANG_COOKIE_MAX_AGE
+            + '; SameSite=Lax' + secure + sharedCookieDomain();
     }
 
     /* 纯前端应用某语言:更新字典/文档 lang/标记文本/菜单选中态 */
@@ -218,7 +237,7 @@ document.documentElement.lang = document.body.getAttribute('data-lang') || 'zh-c
 
     /* 页面加载完成后,低优先级后台预取其余语言 */
     function prefetchI18n() {
-        ['zh-cn', 'en-us', 'ja-jp', 'ko-kr'].forEach(function(lang) {
+        SUPPORTED_LANGS.forEach(function(lang) {
             if (lang === CURRENT_LANG || I18N_CACHE[lang] != null) return;
             fetchI18n(lang, function() {});
         });

@@ -42,8 +42,12 @@ function b64url(input: Uint8Array | string): string {
   return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
 
-async function signToken(claims: Record<string, unknown>, alg = "RS256"): Promise<string> {
-  const header = b64url(JSON.stringify({ alg, kid: KID, typ: "JWT" }));
+async function signToken(
+  claims: Record<string, unknown>,
+  alg = "RS256",
+  kid: string = KID,
+): Promise<string> {
+  const header = b64url(JSON.stringify({ alg, kid, typ: "JWT" }));
   const payload = b64url(JSON.stringify(claims));
   const signingInput = `${header}.${payload}`;
   if (alg !== "RS256") return `${signingInput}.${b64url("bogus-signature")}`;
@@ -234,5 +238,55 @@ describe("verifyAccessJwt", () => {
     vi.stubGlobal("fetch", async () => new Response("boom", { status: 500 }));
     const token = await signToken(baseClaims());
     expect(await verifyAccessJwt(baseEnv, token)).not.toBeNull();
+  });
+
+  it("refetches JWKS once when the token's kid is not in the cache", async () => {
+    // Cloudflare 每 6 周轮换签名密钥。缓存 1h 且不按 kid 刷新时，轮换后新 token
+    // 会被判无效直到缓存过期：/login 401、受保护子域无限 302。
+    vi.resetModules();
+    const fresh = await import("./access");
+
+    // 先热出「只有旧 kid」的缓存。
+    let jwksCalls = 0;
+    vi.stubGlobal("fetch", async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (!url.includes("/cdn-cgi/access/certs")) return new Response("not found", { status: 404 });
+      jwksCalls += 1;
+      const kid = jwksCalls === 1 ? "old-kid" : KID;
+      return new Response(JSON.stringify({ keys: [{ ...publicJwk, kid, use: "sig" }] }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    });
+    const warm = await fresh.verifyAccessJwt(
+      baseEnv,
+      await signToken(baseClaims(), "RS256", "old-kid"),
+    );
+    expect(warm).not.toBeNull();
+    const callsAfterWarm = jwksCalls;
+
+    // 轮换后的 token：kid 未命中 → 必须绕过 TTL 重拉一次 JWKS，然后验签通过。
+    const rotated = await signToken(baseClaims(), "RS256", KID);
+    expect(await fresh.verifyAccessJwt(baseEnv, rotated)).not.toBeNull();
+    expect(jwksCalls).toBe(callsAfterWarm + 1);
+  });
+
+  it("does not refetch when the kid is already cached", async () => {
+    vi.resetModules();
+    const fresh = await import("./access");
+    let jwksCalls = 0;
+    vi.stubGlobal("fetch", async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (!url.includes("/cdn-cgi/access/certs")) return new Response("not found", { status: 404 });
+      jwksCalls += 1;
+      return new Response(JSON.stringify({ keys: [{ ...publicJwk, kid: KID, use: "sig" }] }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    });
+    const token = await signToken(baseClaims());
+    expect(await fresh.verifyAccessJwt(baseEnv, token)).not.toBeNull();
+    expect(await fresh.verifyAccessJwt(baseEnv, token)).not.toBeNull();
+    expect(jwksCalls).toBe(1);
   });
 });

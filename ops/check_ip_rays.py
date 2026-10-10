@@ -80,6 +80,16 @@ def looks_like_hash(raw: str) -> bool:
 d1_query_retry = d1_client.d1_query_retry
 
 
+def warn(message: str) -> None:
+    """先 flush stdout 再写 stderr，避免两个流交错。"""
+    sys.stdout.flush()
+    print(message, file=sys.stderr)
+    sys.stderr.flush()
+
+
+scan_cost_note = d1_client.scan_note
+
+
 def visitor_key(env: dict[str, str]) -> str:
     return d1_client.env_value(env, "VISITOR_IP_KEY")
 
@@ -210,13 +220,32 @@ def main() -> int:
         except ValueError:
             print("invalid IP", file=sys.stderr)
             return 2
-        hashes, warn = resolve_hashes(cfg, env, ip)
-        if warn:
-            warnings.append(warn)
+        # 先报代价再开扫：要解密全部 ip_enc 才能把明文 IP 映射到 ip_hash。
+        warn(
+            scan_cost_note(
+                cfg,
+                "visitor_rollups",
+                "ip_enc IS NOT NULL AND ip_enc != ''",
+                "no index on ip_enc; every ciphertext row is decrypted locally",
+                "Pass --hash <ip_hash> to skip this step when the hash is already known.",
+            )
+        )
+        hashes, warn_msg = resolve_hashes(cfg, env, ip)
+        if warn_msg:
+            warnings.append(warn_msg)
 
-    rows, warn = rays_by_hash(cfg, hashes, limit)
-    if warn:
-        warnings.append(warn)
+    warn(
+        scan_cost_note(
+            cfg,
+            "ray_log_v2",
+            "",
+            "no (ip_hash, ts DESC) index; the 7-day detail table is scanned",
+            "Pass --hash <ip_hash> to avoid the ip_enc scan, but ray_log_v2 stays a scan.",
+        )
+    )
+    rows, warn_msg = rays_by_hash(cfg, hashes, limit)
+    if warn_msg:
+        warnings.append(warn_msg)
 
     legacy: list[dict] = []
     if ip and len(rows) < limit:
@@ -250,8 +279,8 @@ def main() -> int:
     for row in legacy:
         print("  " + render_legacy(row))
 
-    for warn in dict.fromkeys(warnings):
-        print(f"  note: {warn}", file=sys.stderr)
+    for note in dict.fromkeys(warnings):
+        print(f"  note: {note}", file=sys.stderr)
 
     if not rows and not legacy:
         print(f"\nno records found: {label}", file=sys.stderr)

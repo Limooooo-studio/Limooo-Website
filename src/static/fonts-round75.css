@@ -1,8 +1,9 @@
 /* Inter 自托管字体（变量字体，wght 轴 100–900，覆盖全部字重）
    来源：@fontsource-variable/inter 5.3.0（SIL OFL 1.1，许可见 fonts/inter/LICENSE.txt）
    通过 unicode-range 按需下载子集；font-display: optional，避免加载后二次替换。
-   主站由 limooo.cn/static/fonts.css 提供，build.py 会同步镜像到 Pages public/static/；
-   相对路径 url(fonts/...) 以 fonts.css 自身位置为基准，任何域名/预览目录下都能正确解析。 */
+   主站模板（base.html / auth.html / redirect.html）以
+   /static/fonts-round75.css?v=2 引用本文件，build.py 会把它镜像到 Pages public/static/；
+   相对路径 url(fonts/...) 以本文件自身位置为基准，任何域名/预览目录下都能正确解析。 */
 @font-face {
   font-family: 'Inter';
   font-style: normal;
@@ -82,12 +83,14 @@
 /* Baloo 2 品牌字体（变量字体，wght 轴，用于导航/页脚/首页主标题 Limooo 商标）
    来源：Baloo 2（SIL OFL 1.1，许可见 fonts/baloo2/OFL.txt）
    仅拉丁子集；font-display: swap，字体到达后即使首帧已用回退字体也会替换
-   （配合 base.html 的 <link rel=preload>，尽量避免回退闪现）。 */
+   （配合 base.html 的 <link rel=preload>，尽量避免回退闪现）。
+   ?v=2 必须与 base.html 的 preload 完全一致：/static/*.woff2 吃 _headers 里的
+   immutable 一年缓存，preload 与 CSS 两侧 URL 不一致会白白下载两次。 */
 @font-face {
   font-family: 'Baloo 2';
   font-style: normal;
   font-display: swap;
   font-weight: 100 900;
-  src: url(fonts/baloo2/baloo2-latin-wght-normal.woff2) format('woff2');
+  src: url(fonts/baloo2/baloo2-latin-wght-normal.woff2?v=2) format('woff2');
   unicode-range: U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD;
 }

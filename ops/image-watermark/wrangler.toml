@@ -1,12 +1,18 @@
-# image.limooo.cn 图片水印 Worker（纯路由，不做图片处理）
-# 部署：CLOUDFLARE_API_TOKEN=... CLOUDFLARE_ACCOUNT_ID=... npx wrangler deploy
-# 路由：image.limooo.cn/* → image-watermark
+# image-watermark Worker: routing only, no image processing (image.limooo.cn).
+#
+# Deploy: bash ops/workers_deploy.sh --worker=image-watermark
+#         (= wrangler deploy --config ops/image-watermark/wrangler.toml)
+#
+# Route: image.limooo.cn/* -> image-watermark. The route is deliberately NOT
+# declared here: the custom domain and its route live in the Cloudflare Dashboard
+# (Workers & Pages -> image-watermark -> Settings -> Domains & Routes) and are only
+# documented in ops/cloudflare/README.md. Adding a `routes` block would let every
+# deploy rewrite the live route set, which this repository cannot diff or roll back.
 name = "image-watermark"
 main = "src/index.js"
 compatibility_date = "2026-08-15"
 account_id = "4a7fd8c8f1a59a265981a73e631b9e3f"
 
-# 说明：水印变体由构建时生成（src/build.py → public/static/wm/），
-# Worker 只做路径归一化与代理，不按 Referer 判定（原图已不在任何公开地址），
-# CPU 开销接近零，适配 Workers Free 套餐 10ms CPU 限制
-# （运行时 Canvas/图片重编码不可行）。
+# Watermark variants are produced at build time (src/build.py -> public/static/wm/);
+# the Worker only normalises paths and proxies, so CPU cost is near zero and it fits
+# the Workers Free 10 ms CPU limit (no runtime Canvas / image re-encoding possible).

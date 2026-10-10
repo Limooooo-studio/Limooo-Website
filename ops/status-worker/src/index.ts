@@ -10,12 +10,23 @@ import { runRetention } from "./retention";
  *   - GET /api/status 供状态页取数；GET /_health 存活探针
  *
  * 告警邮件（阶段 3）在 maybeAlert() 处落地，现在只记录日志、不发送。
+ *
+ * 公网写接口只有两个：POST /run（跑一轮探针、写 D1）与 POST /alert-test
+ * （真的发信）。本 Worker 挂在 status.limooo.cn 上、没有 Cloudflare Access，
+ * 因此两者都要求 `Authorization: Bearer $STATUS_TOKEN`——见 authorized()。
+ * **部署后必须 `wrangler secret put STATUS_TOKEN`，否则这两个接口一直是 401。**
  */
 
 export interface Env {
   DB: D1Database;
   PROBE_STATE: DurableObjectNamespace;
+  /** 运维写接口（/run、/alert-test）的共享密钥；未配置时这两个接口一律 401。 */
+  STATUS_TOKEN?: string;
   EMAIL?: { send: (msg: unknown) => Promise<unknown> };
+  /** 告警通道首选：HTTP webhook（默认飞书自定义机器人格式）。 */
+  ALERT_WEBHOOK_URL?: string;
+  /** webhook 形态：feishu（默认）/ slack / generic。 */
+  ALERT_WEBHOOK_KIND?: string;
   ALERT_TO?: string;
   ALERT_FROM?: string;
   ALERT_LANG?: string;
@@ -287,30 +298,21 @@ export interface DeliverResult {
 }
 
 /**
- * 投递告警。通道优先级：HTTP webhook（免费，默认飞书机器人）→ Email binding。
- * 未配置任何通道时返回 reason，不抛错。
+ * 投递告警。通道优先级按 `AGENTS.md` 的定义：
+ * **HTTP webhook（首选，默认飞书机器人格式）→ Email binding → SMTP**。
+ *
+ * 两个要点（docs/22 W2-3）：
+ * 1. 顺序：webhook 是最便宜也最可靠的一跳，必须排在 SMTP 之前。此前 SMTP 在最前，
+ *    而 SMTP 配置在线上并不总是可用，于是「配了 webhook 却拿不到告警」。
+ * 2. 降级：任一通道失败都要继续试下一个，不能直接 return。此前 SMTP 失败即返回，
+ *    告警被静默丢弃——这比不配置通道更危险，因为看起来是「已配置」的。
+ * 全部失败时返回最后一个通道的原因，仍然不抛错。
  */
 export async function deliverAlert(env: Env, mail: AlertEmail): Promise<DeliverResult> {
-  // 1) 邮箱服务商 SMTP（AGENTS.md 指定路径）
-  if (env.SMTP_HOST && env.SMTP_USER && env.SMTP_PASS && env.ALERT_TO) {
-    const cfg: SmtpConfig = {
-      host: env.SMTP_HOST,
-      port: Number.parseInt(env.SMTP_PORT ?? "465", 10) || 465,
-      user: env.SMTP_USER,
-      pass: env.SMTP_PASS,
-      from: env.SMTP_FROM ?? "no-reply@limooo.cn",
-    };
-    const r = await sendViaSmtp(cfg, {
-      to: env.ALERT_TO,
-      subject: mail.subject,
-      text: mail.text,
-      html: mail.html,
-    });
-    if (r.sent) return { sent: true, via: "email" };
-    console.log(JSON.stringify({ event: "smtp_failed", reason: r.reason }));
-    return { sent: false, via: "email", reason: r.reason };
-  }
+  let lastReason: string | undefined;
+  let lastVia: "webhook" | "email" | undefined;
 
+  // 1) HTTP webhook（首选）
   const url = env.ALERT_WEBHOOK_URL;
   if (url) {
     const kind = (env.ALERT_WEBHOOK_KIND ?? "feishu").toLowerCase();
@@ -327,17 +329,17 @@ export async function deliverAlert(env: Env, mail: AlertEmail): Promise<DeliverR
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
       });
-      if (!res.ok) {
-        return { sent: false, via: "webhook", reason: `webhook_http_${res.status}` };
-      }
-      return { sent: true, via: "webhook" };
+      if (res.ok) return { sent: true, via: "webhook" };
+      lastReason = `webhook_http_${res.status}`;
     } catch (err) {
-      return { sent: false, via: "webhook", reason: `webhook_error: ${String(err)}` };
+      lastReason = `webhook_error: ${String(err)}`;
     }
+    lastVia = "webhook";
+    console.log(JSON.stringify({ event: "webhook_failed", reason: lastReason }));
   }
 
-  if (env.EMAIL) {
-    if (!env.ALERT_TO) return { sent: false, via: "email", reason: "alert_to_missing" };
+  // 2) Email binding（后备）
+  if (env.EMAIL && env.ALERT_TO) {
     try {
       await env.EMAIL.send({
         to: env.ALERT_TO,
@@ -348,11 +350,37 @@ export async function deliverAlert(env: Env, mail: AlertEmail): Promise<DeliverR
       });
       return { sent: true, via: "email" };
     } catch (err) {
-      return { sent: false, via: "email", reason: `send_failed: ${String(err)}` };
+      lastReason = `send_failed: ${String(err)}`;
+      lastVia = "email";
     }
+  } else if (env.EMAIL && !env.ALERT_TO) {
+    lastReason = "alert_to_missing";
+    lastVia = "email";
   }
 
-  return { sent: false, reason: "no_alert_channel" };
+  // 3) 邮箱服务商 SMTP（最后兜底；配置不齐时 sendViaSmtp 自己会返回原因）
+  if (env.SMTP_HOST && env.SMTP_USER && env.SMTP_PASS && env.ALERT_TO) {
+    const cfg: SmtpConfig = {
+      host: env.SMTP_HOST,
+      port: Number.parseInt(env.SMTP_PORT ?? "465", 10) || 465,
+      user: env.SMTP_USER,
+      pass: env.SMTP_PASS,
+      from: env.SMTP_FROM ?? "no-reply@limooo.cn",
+    };
+    const r = await sendViaSmtp(cfg, {
+      to: env.ALERT_TO,
+      subject: mail.subject,
+      text: mail.text,
+      html: mail.html,
+    });
+    if (r.sent) return { sent: true, via: "email" };
+    lastReason = r.reason;
+    lastVia = "email";
+    console.log(JSON.stringify({ event: "smtp_failed", reason: r.reason }));
+  }
+
+  if (!lastReason) return { sent: false, reason: "no_alert_channel" };
+  return { sent: false, via: lastVia, reason: lastReason };
 }
 
 /** 发送探针告警；任何失败都只返回原因，绝不抛出。 */
@@ -450,7 +478,11 @@ interface StatusRow {
 export async function statusPayload(env: Env) {
   const now = Math.floor(Date.now() / 1000);
   // 7 天窗口按「天」取整，才能命中 probe_uptime_daily 的按天汇总。
-  const sinceDay = now - 7 * 24 * 3600 - 86400;
+  // day 桶是 UTC 整天（写入侧 floor 到当天零点），所以起点必须落在零点上：
+  // 「今天零点」回推 6 天 = 恰好 7 个整天桶（含今天）。
+  // 旧写法 now - 7*86400 - 86400 会把 8 天前那一整天也圈进来（实际 8–9 个桶）。
+  const todayStart = now - (now % 86400);
+  const sinceDay = todayStart - 6 * 86400;
   const { results } = await env.DB.prepare(
     `SELECT p.id, p.name, p.type, p.target, p.group_key, p.active, p.label_key,
             s.last_status AS status, s.checked_at,
@@ -628,8 +660,10 @@ footer{display:flex;justify-content:space-between;color:var(--muted);font-size:1
 .note{color:var(--muted);font-size:12px;margin-top:10px}`;
 
 // 自动重载节奏：整页重载会重新走一次 D1 聚合，60 秒太激进（D1 读取配额），
-// 5 分钟足够反映探针状态。
-export const STATUS_JS = `(function(){var n=300;var el=document.getElementById('refresh-count');var t=document.getElementById('updated-at');if(t){var e=t.getAttribute('data-epoch');if(e){t.textContent=new Date(Number(e)*1000).toLocaleString();}}setInterval(function(){n=n-1;if(el){el.textContent=String(n>0?n:0);}if(n<=0){location.reload();}},1000);})();`;
+// 5 分钟足够反映探针状态。SSR 的首屏倒计时与 STATUS_JS 必须用同一个常量，
+// 否则首屏显示 60、脚本第一秒就跳成 300（曾经就是这样）。
+export const REFRESH_SECONDS = 300;
+export const STATUS_JS = `(function(){var n=${REFRESH_SECONDS};var el=document.getElementById('refresh-count');var t=document.getElementById('updated-at');if(t){var e=t.getAttribute('data-epoch');if(e){t.textContent=new Date(Number(e)*1000).toLocaleString();}}setInterval(function(){n=n-1;if(el){el.textContent=String(n>0?n:0);}if(n<=0){location.reload();}},1000);})();`;
 
 /**
  * 状态页 HTML 的边缘缓存策略。
@@ -697,15 +731,71 @@ export async function renderStatusPage(env: Env, lang: string): Promise<string> 
     `<span class="count">(${payload.down}/${payload.total})</span></div></div>` +
     sections +
     `<footer><span>${esc(t.updated)} <time id="updated-at" data-epoch="${payload.updated_at}">—</time></span>` +
-    `<span>${esc(t.refresh)} <span id="refresh-count">60</span>s</span></footer>` +
+    `<span>${esc(t.refresh)} <span id="refresh-count">${REFRESH_SECONDS}</span>s</span></footer>` +
     `<p class="note">${esc(t.note)}</p>` +
     `</main><script src="/status.js" defer></script></body></html>`
   );
 }
 
+/**
+ * 运维写接口（/run、/alert-test）的鉴权：比对 `Authorization: Bearer <STATUS_TOKEN>`。
+ *
+ * 这个 Worker 挂在公网（status.limooo.cn）且没有 Cloudflare Access，而这两个接口
+ * 代价都不小——/run 会写 D1（探针 × heartbeats/probe_state/probe_uptime_daily，
+ * 循环调用能烧掉每日写入额度），/alert-test 会真的发告警信。共享密钥是唯一闸门。
+ *
+ * 与 ops/sync-worker 的 authorized() 同源：**未配置 STATUS_TOKEN 时 fail-closed**
+ * （拒绝一切，而不是「没设密码就等于开放」）；长度相等才逐字符比较，避免提前返回
+ * 泄露前缀。scheduled() 走内部调用，不经过这里。
+ */
+export function authorized(request: Request, env: Env): boolean {
+  const expected = (env.STATUS_TOKEN ?? "").trim();
+  if (!expected) return false;
+  const header = request.headers.get("Authorization") ?? "";
+  const prefix = "Bearer ";
+  if (!header.startsWith(prefix)) return false;
+  const provided = header.slice(prefix.length).trim();
+  if (!provided || provided.length !== expected.length) return false;
+  // 长度相等时逐字符比较，避免提前返回泄露前缀信息。
+  let diff = 0;
+  for (let i = 0; i < expected.length; i++) {
+    diff |= expected.charCodeAt(i) ^ provided.charCodeAt(i);
+  }
+  return diff === 0;
+}
+
+/** /alert-test 的同 IP 节流窗口（秒）。 */
+export const ALERT_TEST_THROTTLE_S = 60;
+
+// isolate 级内存节流：尽力而为（多 isolate 各自计数），只作为鉴权之外的第二层，
+// 防止拿到 token 的手滑脚本循环发信把收件箱打爆。
+const alertTestHits = new Map<string, number>();
+
+/** 记录本次 /alert-test 并判断是否该节流；顺带清掉过期条目，避免 Map 无界增长。 */
+export function throttleAlertTest(ip: string, now: number): boolean {
+  const windowMs = ALERT_TEST_THROTTLE_S * 1000;
+  for (const [key, at] of alertTestHits) {
+    if (now - at >= windowMs) alertTestHits.delete(key);
+  }
+  const last = alertTestHits.get(ip);
+  if (last !== undefined && now - last < windowMs) return true;
+  alertTestHits.set(ip, now);
+  return false;
+}
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
+    // 写接口先过闸：未授权时连 D1 都不碰，第三方页面的简单 POST 因此打不到探针与告警。
+    const isOpsWrite =
+      request.method === "POST" && (url.pathname === "/run" || url.pathname === "/alert-test");
+    if (isOpsWrite && !authorized(request, env)) {
+      console.warn(JSON.stringify({ event: "status_ops_unauthorized", path: url.pathname }));
+      return Response.json(
+        { error: "unauthorized" },
+        { status: 401, headers: { "WWW-Authenticate": "Bearer", "Cache-Control": "no-store" } },
+      );
+    }
     if (url.pathname === "/_health") {
       return Response.json({ ok: true, service: "limooo-status" });
     }
@@ -747,7 +837,7 @@ export default {
       const payload = await statusPayload(env);
       return Response.json(payload, { headers: { "Cache-Control": "no-store" } });
     }
-    // 手动触发一轮探针（运维/排障用；只返回公开的状态数据）
+    // 手动触发一轮探针（运维/排障用，需要 STATUS_TOKEN；只返回公开的状态数据）
     if (url.pathname === "/run" && request.method === "POST") {
       const ran = await runAll(env);
       return Response.json({ ran, status: await statusPayload(env) });
@@ -766,6 +856,20 @@ export default {
     }
     // 告警发送自检：真实调用 binding，返回是否配置成功（不泄密）
     if (url.pathname === "/alert-test" && request.method === "POST") {
+      // 第二层：同 IP 60 s 一次（鉴权已在上方过闸，这里只防「有 token 也手滑」）。
+      const ip = request.headers.get("CF-Connecting-IP") ?? "unknown";
+      if (throttleAlertTest(ip, Date.now())) {
+        return Response.json(
+          { error: "too_many_requests", retry_after_s: ALERT_TEST_THROTTLE_S },
+          {
+            status: 429,
+            headers: {
+              "Retry-After": String(ALERT_TEST_THROTTLE_S),
+              "Cache-Control": "no-store",
+            },
+          },
+        );
+      }
       const result = await sendAlert(env, "down", url.searchParams.get("probe") ?? "Website", "selftest");
       return Response.json({
         configured: Boolean(env.EMAIL),

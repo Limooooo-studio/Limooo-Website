@@ -10,6 +10,7 @@ import {
   detectLang,
   escapeHtml,
   isGateTrustedIp,
+  isPublicHost,
   preserveSetCookie,
   safeNextPath,
   sanitizeHost,
@@ -51,6 +52,15 @@ function deferLog(context: RequestContext, promise: Promise<unknown>): void {
  * 「1 小时会话」是可验证的承诺，而不是随请求漂移的滑动窗口。
  */
 export const GATE_RENEW_AFTER_SECONDS = Math.floor(GATE_TTL_SECONDS * 0.75);
+
+/**
+ * 每次请求最多校验几枚同名 `__gate`。
+ *
+ * 正常访客最多两枚（早期 host-only + 现在的域级），8 留足余量；上限存在的意义是
+ * 不让攻击者用超长 Cookie 头把每请求的 WebCrypto 次数变成可控的任意值
+ * （docs/22 W9-10）。
+ */
+export const MAX_GATE_COOKIE_VALUES = 8;
 
 /** 校验失败的分类，只用于诊断日志，不回传给访客以免泄露校验细节。 */
 export type GateCookieReason =
@@ -196,7 +206,11 @@ export async function resolveGateTrust(
     shouldRenew: false,
     reason: values.length > 0 ? "malformed" : "absent",
   };
-  for (const value of values) {
+  // 同名 cookie 的数量没有上限，而每一枚都要跑一次正则 + WebCrypto
+  // importKey + sign：32 KB 的 Cookie 头 ≈ 400 枚 ≈ 400 次 WebCrypto 调用，
+  // 每请求的 CPU 由攻击者决定（docs/22 W9-10）。只校验前 N 枚。
+  // 正常访客最多只有 2 枚（旧 host-only + 新域级），不影响既有行为。
+  for (const value of values.slice(0, MAX_GATE_COOKIE_VALUES)) {
     const state = await readGateCookie(value, env.GATE_HMAC_KEY);
     if (state.valid) {
       best = state;
@@ -328,8 +342,9 @@ export async function renderGatePage(
   const asset = await env.ASSETS.fetch(new URL(`/${lang}/auth.html`, BASE_URL));
   if (!asset.ok) return new Response("Gate page unavailable", { status: 503 });
   const source = await asset.text();
+  // 语言由模板的 <html lang="{{ g.lang }}"> 在构建期渲染；`{{lang}}` 占位符已不在
+  // 任何模板或产物里（对改动前的 public/ 做 grep 零命中），不再做无谓替换。
   const html = source
-    .replaceAll("{{lang}}", lang)
     .replaceAll("{{host}}", escapeHtml(host))
     .replaceAll("{{next}}", escapeHtml(next))
     .replaceAll("{{error}}", escapeHtml(opts.errorKey ?? ""));
@@ -499,7 +514,22 @@ export async function isBlocked(
 }
 
 /**
+ * 门禁 widget 期望的 action。当前 `src/static/js/auth.js` 没有给 widget 设 action，
+ * 所以 siteverify 也不会返回它——只有真的返回了才做比对（见下）。
+ */
+export const GATE_TURNSTILE_ACTION = "gate";
+
+/**
  * 调用 Turnstile siteverify；`remoteip` 只来自 `CF-Connecting-IP`。
+ *
+ * 除了 `success`，还要校验 **hostname** 属于本站托管的主机（`isPublicHost`，
+ * 与回跳白名单同一份契约）：同一个 sitekey 若被加到别的域名上，那些站点解出的
+ * token 也能通过 siteverify，只看 `success` 就把「本站访客」的定义交给了
+ * sitekey 配置（docs/22 W9-16，纵深防御）。缺 `hostname` 一律拒绝。
+ *
+ * `action` 只在站点真的声明了才校验：门禁 widget 现在没设 action，siteverify
+ * 也不返回；一旦将来给 widget 加上 action，这里用一个固定期望值把它钉住，
+ * 别的组件解出的 token 就不能复用。
  *
  * 导出仅为测试可断言「访客自带的转发头不会进入 remoteip」；生产调用点只有
  * `handleVerify` 一处。
@@ -519,8 +549,16 @@ export async function verifyTurnstile(
       signal: controller.signal,
     });
     if (!resp.ok) throw new Error(`siteverify HTTP ${resp.status}`);
-    const data = (await resp.json()) as { success?: boolean };
-    return data.success === true;
+    const data = (await resp.json()) as {
+      success?: boolean;
+      hostname?: unknown;
+      action?: unknown;
+    };
+    if (data.success !== true) return false;
+    const hostname = typeof data.hostname === "string" ? data.hostname : "";
+    if (!isPublicHost(hostname)) return false;
+    if (typeof data.action === "string" && data.action !== GATE_TURNSTILE_ACTION) return false;
+    return true;
   } finally {
     clearTimeout(timer);
   }
@@ -571,7 +609,11 @@ export async function handleVerify(context: RequestContext): Promise<Response> {
 
   let success = false;
   let unavailable = false;
-  if (!env.TURNSTILE_SECRET) {
+  // 两把密钥都要在：TURNSTILE_SECRET 用来问题目，GATE_HMAC_KEY 用来签 cookie。
+  // 此前只查前者，GATE_HMAC_KEY 为空时会走到 gateCookieHeaders("") 并用**空密钥**
+  // 签发一枚 __gate —— 今天靠中间件的 runtimeConfigError 兜住，但这个函数是
+  // 「中间件路由缺失时的兜底入口」，自己必须有这道门（docs/22 W9-11）。
+  if (!env.TURNSTILE_SECRET || !env.GATE_HMAC_KEY) {
     unavailable = true;
   } else {
     try {
@@ -589,9 +631,11 @@ export async function handleVerify(context: RequestContext): Promise<Response> {
         status: unavailable ? 503 : 403,
         durationMs: Date.now() - startedAt,
         message: unavailable
-          ? env.TURNSTILE_SECRET
-            ? "turnstile_unavailable"
-            : "turnstile_secret_missing"
+          ? env.GATE_HMAC_KEY
+            ? env.TURNSTILE_SECRET
+              ? "turnstile_unavailable"
+              : "turnstile_secret_missing"
+            : "gate_hmac_key_missing"
           : token
             ? "turnstile_rejected"
             : "missing_token",

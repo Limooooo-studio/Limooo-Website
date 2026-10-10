@@ -15,6 +15,7 @@
 import { queryAll } from "../../../_lib/d1";
 import { requireAdminSession } from "../../../_lib/session";
 import { decryptVisitorIp, visitorIpKey } from "../../../_lib/visitor-ip";
+import { logEvent } from "../../../_lib/logging";
 import type { Env } from "../../../_lib/env";
 
 /** ip_hash 是 HMAC-SHA256 的前 16 位十六进制（见 _lib/logging.ts ipHash）。 */
@@ -27,11 +28,30 @@ function json(body: unknown, status = 200): Response {
 export const onRequestGet: PagesFunction<Env> = async (context) => {
   const auth = await requireAdminSession(context.env, context.request, "无权限");
   if (auth instanceof Response) return auth;
+  const actorSub = auth.session.sub;
 
   const hash = String(context.params?.hash ?? "");
   if (!IP_HASH_RE.test(hash)) return json({ error: "无效的访客标识" }, 400);
 
-  if (!visitorIpKey(context.env)) return json({ error: "ip_unavailable" }, 503);
+  /**
+   * 每一次「把某个访客的明文 IP 拿出来」都留一行审计（docs/22 W9-4）。
+   *
+   * 同类的密码查看（`apple-account/accounts/[id]/reveal.ts`）一直有审计行，
+   * 这里此前一条都没有：谁在什么时候看了哪个访客的真实 IP 无从追溯。
+   * 审计里只放哈希与 actor，**绝不放明文 IP**——否则等于把明文又抄一份进 events。
+   */
+  const audit = (outcome: string, status: number, message: string): Promise<void> =>
+    logEvent(context.env, "audit_event", context.request, {
+      outcome,
+      status,
+      actorSub,
+      message: `${message} hash=${hash}`,
+    });
+
+  if (!visitorIpKey(context.env)) {
+    await audit("visitor_ip_unavailable", 503, "visitor_ip_key_missing");
+    return json({ error: "ip_unavailable" }, 503);
+  }
 
   const rows = await queryAll<{ ip_enc: string }>(
     context.env.DB,
@@ -43,13 +63,18 @@ export const onRequestGet: PagesFunction<Env> = async (context) => {
     hash,
   );
   const token = rows[0]?.ip_enc ?? "";
-  if (!token) return json({ error: "ip_unavailable" }, 404);
+  if (!token) {
+    await audit("visitor_ip_missing", 404, "visitor_ip_not_stored");
+    return json({ error: "ip_unavailable" }, 404);
+  }
 
   const ip = await decryptVisitorIp(token, context.env);
   if (!ip) {
     console.error(JSON.stringify({ event: "visitor_ip_decrypt_error", hash }));
+    await audit("visitor_ip_decrypt_failed", 500, "visitor_ip_decrypt_failed");
     return json({ error: "ip_unavailable" }, 500);
   }
 
+  await audit("visitor_ip_revealed", 200, "visitor_ip_revealed");
   return json({ ip });
 };

@@ -1,0 +1,123 @@
+{
+  "_comment": [
+    "TS <-> Python IP/CIDR parity fixture (docs/22 W9-2).",
+    "expected_* values are CPython ipaddress output; functions/_lib/cidr.ts and",
+    "src/cidr.py must both reproduce them, otherwise blocked_ips rows written by",
+    "Python (canonical dotted-quad form) never match the candidates built by",
+    "isBlocked() in the Worker (hex form) and the block becomes a silent no-op.",
+    "Regenerate with python3 -c 'import ipaddress; ...' -- see tests/test_cidr.py."
+  ],
+  "normalize": [
+    {
+      "input": "1.2.3.4",
+      "expected": "1.2.3.4"
+    },
+    {
+      "input": "0.0.0.0",
+      "expected": "0.0.0.0"
+    },
+    {
+      "input": "255.255.255.255",
+      "expected": "255.255.255.255"
+    },
+    {
+      "input": "203.0.113.9",
+      "expected": "203.0.113.9"
+    },
+    {
+      "input": "2001:0db8:0:0:0:0:0:1",
+      "expected": "2001:db8::1"
+    },
+    {
+      "input": "2001:db8::1",
+      "expected": "2001:db8::1"
+    },
+    {
+      "input": "::1",
+      "expected": "::1"
+    },
+    {
+      "input": "::",
+      "expected": "::"
+    },
+    {
+      "input": "::ffff:1.2.3.4",
+      "expected": "::ffff:1.2.3.4"
+    },
+    {
+      "input": "::ffff:0:1.2.3.4",
+      "expected": "::ffff:0:102:304"
+    },
+    {
+      "input": "::FFFF:1.2.3.4",
+      "expected": "::ffff:1.2.3.4"
+    },
+    {
+      "input": "::ffff:0.0.0.0",
+      "expected": "::ffff:0.0.0.0"
+    },
+    {
+      "input": "64:ff9b::1.2.3.4",
+      "expected": "64:ff9b::102:304"
+    },
+    {
+      "input": "64:ff9b::102:304",
+      "expected": "64:ff9b::102:304"
+    },
+    {
+      "input": "fe80::1",
+      "expected": "fe80::1"
+    },
+    {
+      "input": "2001:db8:0:0:1:0:0:1",
+      "expected": "2001:db8::1:0:0:1"
+    }
+  ],
+  "cidr": [
+    {
+      "input": "1.2.3.4/32",
+      "expected_network": "1.2.3.4",
+      "expected_prefix": 32
+    },
+    {
+      "input": "1.2.3.0/24",
+      "expected_network": "1.2.3.0",
+      "expected_prefix": 24
+    },
+    {
+      "input": "::ffff:1.2.3.4/128",
+      "expected_network": "::ffff:1.2.3.4",
+      "expected_prefix": 128
+    },
+    {
+      "input": "::ffff:1.2.3.4/96",
+      "expected_network": "::ffff:0.0.0.0",
+      "expected_prefix": 96
+    },
+    {
+      "input": "::ffff:1.2.3.4/120",
+      "expected_network": "::ffff:1.2.3.0",
+      "expected_prefix": 120
+    },
+    {
+      "input": "2001:db8::/32",
+      "expected_network": "2001:db8::",
+      "expected_prefix": 32
+    },
+    {
+      "input": "2001:db8::1/128",
+      "expected_network": "2001:db8::1",
+      "expected_prefix": 128
+    },
+    {
+      "input": "::/0",
+      "expected_network": "::",
+      "expected_prefix": 0
+    },
+    {
+      "input": "0.0.0.0/0",
+      "expected_network": "0.0.0.0",
+      "expected_prefix": 0
+    }
+  ]
+}

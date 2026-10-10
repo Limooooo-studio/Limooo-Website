@@ -1,73 +1,99 @@
 #!/usr/bin/env bash
 
-# Limooo - 作品集原图私有备份到 Cloudflare R2
+# Limooo - back up portfolio originals to the private Cloudflare R2 bucket.
 #
-# A2 之后，作品集完整原图（src/static/portfolio/*）不再随 Pages 发布，只在本地
-# 与私有 R2 桶中留存（git 已忽略 src/static/portfolio/）。本脚本把原图上传到
-# R2 私有桶 limooo-originals/portfolio/<file>，作为可审计、可回滚的备份。
+# After A2 the full-size portfolio originals (src/static/portfolio/*) are no longer
+# published with Pages: they live only on this machine and in the private R2 bucket
+# limooo-originals (git ignores src/static/portfolio/). This script uploads them to
+# limooo-originals/portfolio/<file> as an auditable, restorable backup.
 #
-# 用法：
-#   bash ops/upload_originals.sh            # 上传（读服务器 secrets/webauthn.env 的 token）
-#   bash ops/upload_originals.sh --dry-run # 只打印将执行的命令
+# Usage:
+#   bash ops/upload_originals.sh            # upload (credentials from secrets/webauthn.env)
+#   bash ops/upload_originals.sh --dry-run  # print what would run; contact nothing
 #
-# 凭据：CLOUDFLARE_API_TOKEN / CLOUDFLARE_ACCOUNT_ID 从服务器 secrets/webauthn.env
-# 读取（与 pages_deploy.sh 同一份），不写入仓库。
+# Credentials: CLOUDFLARE_API_TOKEN / CLOUDFLARE_ACCOUNT_ID come from the local
+# secrets/webauthn.env (the same file pages_deploy.sh reads). The VPS was retired on
+# 2026-09-17, so no credential is ever fetched from a remote host and no token is echoed.
+#
+# This repo lives in an iCloud-synced area, where in-repo node_modules is unusable;
+# wrangler comes from WRANGLER_BIN (default /tmp/wrangler-env/node_modules/.bin/wrangler).
 
 set -euo pipefail
 
-REMOTE_HOST="${REMOTE_HOST:-limooo}"
-REMOTE_DIR="${REMOTE_DIR:-/var/www/limooo}"
-SSH_OPTS="-o LogLevel=ERROR -o ConnectTimeout=10"
-LOCAL_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BUCKET="${R2_BUCKET:-limooo-originals}"
-SOURCE_DIR="$LOCAL_DIR/src/static/portfolio"
+SOURCE_DIR="${R2_SOURCE_DIR:-$ROOT/src/static/portfolio}"
+SECRETS_FILE="${SECRETS_FILE:-$ROOT/secrets/webauthn.env}"
+WRANGLER_BIN="${WRANGLER_BIN:-/tmp/wrangler-env/node_modules/.bin/wrangler}"
+PREFIX="portfolio"
 
 DRY_RUN=0
-[ "${1:-}" = "--dry-run" ] && DRY_RUN=1
 
-cd "$LOCAL_DIR"
+usage() {
+    # 打印文件头注释块（第 3 行起，到第一个非注释行为止），不再写死行号。
+    awk 'NR>=3 { if ($0 !~ /^#/) exit; sub(/^# ?/, ""); print }' "$0"
+}
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --dry-run) DRY_RUN=1 ;;
+        -h|--help) usage; exit 0 ;;
+        *) echo "FATAL: unknown argument $1 (supported: --dry-run)" >&2; usage >&2; exit 2 ;;
+    esac
+    shift
+done
+
+cd "$ROOT"
 
 if [ ! -d "$SOURCE_DIR" ]; then
     echo "FATAL: missing $SOURCE_DIR" >&2
     exit 1
 fi
-if [ ! -x "$LOCAL_DIR/node_modules/.bin/wrangler" ]; then
-    echo "FATAL: local wrangler not found; run npm ci in $LOCAL_DIR first" >&2
-    exit 1
-fi
+
+FILE_COUNT="$(find "$SOURCE_DIR" -maxdepth 1 -type f | wc -l | tr -d ' ')"
 
 if [ "$DRY_RUN" = 1 ]; then
-    echo "[r2] DRY-RUN: will not contact Cloudflare."
-    echo "[r2] will-run: wrangler r2 bucket create ${BUCKET}  (if absent)"
-    echo "[r2] will-run: wrangler r2 object put ${BUCKET}/portfolio/<file> --file <file> --remote"
-    echo "[r2] files: $(find "$SOURCE_DIR" -maxdepth 1 -type f | wc -l | tr -d ' ')"
+    echo "[r2] DRY-RUN: no Cloudflare call, nothing uploaded."
+    echo "[r2] source: $SOURCE_DIR ($FILE_COUNT files)"
+    echo "[r2] will-run: $WRANGLER_BIN r2 bucket create $BUCKET   (if absent)"
+    echo "[r2] will-run: $WRANGLER_BIN r2 object put $BUCKET/$PREFIX/<file> --file <file> --remote"
+    echo "[r2] credentials source: ${SECRETS_FILE} (CLOUDFLARE_API_TOKEN / CLOUDFLARE_ACCOUNT_ID only)"
     exit 0
 fi
 
-if ! ssh $SSH_OPTS "$REMOTE_HOST" "test -f $REMOTE_DIR/secrets/webauthn.env"; then
-    echo "FATAL: server missing $REMOTE_DIR/secrets/webauthn.env; cannot get Cloudflare token" >&2
+if [ ! -x "$WRANGLER_BIN" ]; then
+    echo "FATAL: wrangler not found: $WRANGLER_BIN" >&2
+    echo "       recreate: mkdir -p /tmp/wrangler-env && cd /tmp/wrangler-env && npm i wrangler@4" >&2
     exit 1
 fi
-eval "$(ssh $SSH_OPTS "$REMOTE_HOST" "cat $REMOTE_DIR/secrets/webauthn.env")"
-export CLOUDFLARE_API_TOKEN CLOUDFLARE_ACCOUNT_ID
+
+if [ ! -f "$SECRETS_FILE" ]; then
+    echo "FATAL: missing $SECRETS_FILE; cannot read the Cloudflare credentials" >&2
+    exit 1
+fi
+
 if [ -z "${CLOUDFLARE_API_TOKEN:-}" ]; then
-    echo "FATAL: webauthn.env has no CLOUDFLARE_API_TOKEN" >&2
+    CLOUDFLARE_API_TOKEN="$(sed -n 's/^CLOUDFLARE_API_TOKEN=//p' "$SECRETS_FILE" | tail -1)"
+    CLOUDFLARE_ACCOUNT_ID="$(sed -n 's/^CLOUDFLARE_ACCOUNT_ID=//p' "$SECRETS_FILE" | tail -1)"
+    export CLOUDFLARE_API_TOKEN CLOUDFLARE_ACCOUNT_ID
+fi
+if [ -z "${CLOUDFLARE_API_TOKEN:-}" ]; then
+    echo "FATAL: CLOUDFLARE_API_TOKEN not found in $SECRETS_FILE" >&2
     exit 1
 fi
 
 echo "[r2] ensuring bucket $BUCKET exists"
-if npx --no-install wrangler r2 bucket list 2>/dev/null | grep -q "\\b$BUCKET\\b"; then
+if "$WRANGLER_BIN" r2 bucket list 2>/dev/null | grep -q -w -- "$BUCKET"; then
     echo "[r2] bucket already exists"
 else
-    npx --no-install wrangler r2 bucket create "$BUCKET"
+    "$WRANGLER_BIN" r2 bucket create "$BUCKET"
 fi
 
 count=0
-for f in "$SOURCE_DIR"/*; do
-    [ -f "$f" ] || continue
-    name="$(basename "$f")"
-    key="${BUCKET}/portfolio/${name}"
-    npx --no-install wrangler r2 object put "$key" --file "$f" --remote
+while IFS= read -r source; do
+    [ -f "$source" ] || continue
+    name="$(basename "$source")"
+    "$WRANGLER_BIN" r2 object put "$BUCKET/$PREFIX/$name" --file "$source" --remote
     count=$((count + 1))
-done
+done < <(find "$SOURCE_DIR" -maxdepth 1 -type f | sort)
 echo "[r2] uploaded $count originals to $BUCKET"

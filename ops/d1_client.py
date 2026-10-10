@@ -121,3 +121,51 @@ def d1_query_retry(
     if raise_on_failure:
         raise RuntimeError(str(last))
     return None
+
+
+SCAN_PROBE_CAP = 50_000
+
+
+def bounded_row_count(
+    cfg: dict[str, str],
+    table: str,
+    where: str = "",
+    cap: int = SCAN_PROBE_CAP,
+) -> tuple[int, bool] | None:
+    """有界行数探测：返回 (行数, 是否触顶)；探测失败返回 None。
+
+    排障脚本要如实提示「本次将扫多少行」（docs/22 W7-9），但 COUNT(*) 自己也要
+    读表。这里把探测写成 `SELECT COUNT(*) FROM (SELECT 1 FROM t WHERE ... LIMIT cap)`，
+    最多读 cap 行；触顶时只能说「至少 cap 行」，由调用方照实描述。
+    """
+    clause = f" WHERE {where}" if where else ""
+    sql = f"SELECT COUNT(*) AS count FROM (SELECT 1 FROM {table}{clause} LIMIT {int(cap)})"
+    rows = d1_query_retry(cfg, sql)
+    if rows is None:
+        return None
+    count = int(rows[0].get("count") or 0) if rows else 0
+    return count, count >= int(cap)
+
+
+def scan_note(
+    cfg: dict[str, str],
+    table: str,
+    where: str,
+    reason: str,
+    hint: str,
+) -> str:
+    """如实描述一次扫表查询的代价（docs/22 W7-9）。
+
+    ray_log_v2 只有 ts 索引，按 ip_hash 查必然全表扫；visitor_rollups 的 ip_enc
+    也没有索引。排障脚本本身不该成为下一次 D1 读取事故的原因，所以要在开扫之前
+    把「大概扫多少行」说清楚，并给出更便宜的入口。
+    """
+    probe = bounded_row_count(cfg, table, where)
+    if probe is None:
+        return (
+            f"note: this run scans {table} ({reason}); the row count probe failed, "
+            f"so the scan size is unknown. {hint}"
+        )
+    count, capped = probe
+    sized = f"at least {count}" if capped else str(count)
+    return f"note: this run scans {sized} rows of {table} ({reason}). {hint}"

@@ -1,7 +1,18 @@
 #!/usr/bin/env python3
-"""Limooo 通用邮件渲染器 —— 所有服务复用。
+"""Limooo shared transactional-email renderer.
 
-用法（Python）：
+DEPRECATED (2026-10-11, docs/22 W7-13): nothing calls `render_email()` any more.
+The VPS Flask app that used it is gone, and Cloudflare Access replaced the login
+mail flow. The one production mail that still goes out is the **status-worker
+alert** (`ops/status-worker/src/index.ts`, `ALERT_I18N` + `buildAlertEmail`),
+which is the single owner of that copy -- `health-alert.i18n.json` in this
+directory is a tombstone, not a second source.
+
+The framework itself is kept because it is the only four-language HTML mail layout
+in the repository, and `tests/test_email_templates.py` keeps it working. If a new
+mail sender is added, either reuse this module or delete it -- never add a third copy.
+
+Usage (Python):
     from render import render_email
     html, plaintext = render_email(
         lang="zh-cn",
@@ -14,7 +25,7 @@
         preheader="您的验证码是 123456",  # 可选：收件箱预览
     )
 
-也可作为 CLI 调试：python3 render.py --lang en-us --title 'Hi' --body 'Hello' --code 123456
+CLI debug: python3 render.py --lang en-us --title 'Hi' --body 'Hello' --code 123456
 """
 from __future__ import annotations
 
@@ -150,9 +161,11 @@ def _main() -> None:
     except Exception as e:  # noqa: BLE001
         print(f"[render] ERROR: {e}", file=sys.stderr)
         sys.exit(1)
-    print("=== PLAIN ===")
+    # 纯英文、无装饰符号（AGENTS.md）：标题行本身就是分隔，不需要 === === 包装。
+    print("plain")
     print(plain)
-    print("=== HTML ===")
+    print()
+    print("html")
     print(html)
 
 

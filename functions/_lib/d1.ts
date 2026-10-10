@@ -34,6 +34,17 @@ export async function queryAll<T>(
   return (await res).results ?? [];
 }
 
+/**
+ * 执行一条写语句，返回「是否真的改动了行」。
+ *
+ * 不能只看 `success`：D1 的 `run()` 对「0 行受影响」的 UPDATE/DELETE
+ * 依然报 `success: true`，于是
+ *   - `PUT /api/apple-account/accounts/<不存在的 id>` 带新密码会返回 200 ok
+ *     （密码被静默丢弃）；
+ *   - `revokeAuthSession` 对不存在的 sid 回答「已撤销」。
+ * `meta.changes` 明确为 0 时算失败。部分驱动/桩不返回 `meta`，此时保持兼容
+ * 按成功处理（拿不到变更数就不敢判定失败，否则会把正常写判成故障）。
+ */
 export async function execute(
   db: D1Database | undefined,
   sql: string,
@@ -42,7 +53,11 @@ export async function execute(
   if (!db) return false;
   const stmt = db.prepare(sql);
   const res = values.length ? stmt.bind(...values).run() : stmt.run();
-  return (await res).success === true;
+  const result = await res;
+  if (result.success !== true) return false;
+  const changes = result.meta?.changes;
+  if (typeof changes === "number") return changes > 0;
+  return true;
 }
 
 /** 在单个 D1 事务中执行多条语句；任一失败则整体失败（D1 batch 语义）。 */

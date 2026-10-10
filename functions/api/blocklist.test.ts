@@ -139,6 +139,49 @@ describe("blocklist API", () => {
     expect(vi.mocked(execute).mock.calls[0][1]).toContain("UPDATE blocked_ips");
   });
 
+  it("caps the stored reason so one request cannot write hundreds of KB", async () => {
+    // 其余字符串字段都有 cap，reason 以前没有：可写入几百 KB/行，撑爆分页响应
+    // 与 500 MB 库容量；审计行与变更在同一批次里，语句过大时连审计一起丢。
+    const long = "x".repeat(5000);
+    const resp = await onRequestPost(
+      context(
+        new Request("https://limooo.cn/api/blocklist", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ cidr: "5.6.7.8", reason: long }),
+        }),
+      ) as never,
+    );
+    expect(resp.status).toBe(201);
+    const mutation = vi.mocked(execute).mock.calls.find((call) =>
+      String(call[1]).includes("INSERT INTO blocked_ips"),
+    );
+    expect(mutation).toBeTruthy();
+    const bound = (mutation ?? []).slice(2) as unknown[];
+    const reason = bound.find((value) => typeof value === "string" && value.startsWith("xxx"));
+    expect(typeof reason).toBe("string");
+    expect(String(reason).length).toBe(255);
+    expect(String(reason)).toBe("x".repeat(255));
+  });
+
+  it("keeps a normal short reason intact", async () => {
+    const resp = await onRequestPost(
+      context(
+        new Request("https://limooo.cn/api/blocklist", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ cidr: "5.6.7.8", reason: "manual block" }),
+        }),
+      ) as never,
+    );
+    expect(resp.status).toBe(201);
+    const mutation = vi.mocked(execute).mock.calls.find((call) =>
+      String(call[1]).includes("INSERT INTO blocked_ips"),
+    );
+    const bound = (mutation ?? []).slice(2) as unknown[];
+    expect(bound[3]).toBe("manual block");
+  });
+
   it("rejects mutating requests without CSRF", async () => {
     vi.mocked(verifyCsrf).mockResolvedValue(false);
     const resp = await onRequestPost(

@@ -293,4 +293,21 @@ describe("requireRecentAdminSession", () => {
     const resp = (await requireRecentAdminSession(env, await cookieWithAge(0))) as Response;
     expect(resp.status).toBe(503);
   });
+
+  it("rejects a future authAt instead of letting a negative age pass", async () => {
+    // `age = now - authAt` 只判上界时负数永远通过。今天不可利用（authAt 有签名），
+    // 但这是守护「明文密码查看」的唯一一道门，方向必须封闭。
+    grantRow("admin");
+    for (const age of [-1, -3600]) {
+      const resp = (await requireRecentAdminSession(env, await cookieWithAge(age))) as Response;
+      expect(resp.status, `authAt ${-age}s in the future`).toBe(401);
+      expect(await resp.json()).toEqual({ error: REAUTH_REQUIRED_MESSAGE, reauth: true });
+    }
+  });
+
+  it("still allows the exact boundary once the future guard is in place", async () => {
+    grantRow("admin");
+    const resp = await requireRecentAdminSession(env, await cookieWithAge(600));
+    expect(resp).not.toBeInstanceOf(Response);
+  });
 });

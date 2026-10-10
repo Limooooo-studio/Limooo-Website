@@ -4,7 +4,23 @@ var turnstileWidget = null;
 var CONFIG = null;
 var GATE_I18N = {};
 var TURNSTILE_SITEKEY = "";
-var CURRENT_LANG = document.body.getAttribute('data-lang') || 'en-us';
+/* 契约事实由 build.py 注入 <body data-*>（模板 _lang_attrs.html），这里只读。 */
+function gateBodyAttr(name, fallback) {
+  var value = document.body && document.body.getAttribute(name);
+  return value === null || value === undefined || value === '' ? (fallback || '') : value;
+}
+var DEFAULT_LANG = gateBodyAttr('data-default-lang', 'en-us');
+var ROOT_DOMAIN = gateBodyAttr('data-root-domain', 'limooo.cn');
+var LANG_COOKIE = gateBodyAttr('data-lang-cookie', 'user_lang_preference');
+var LANG_COOKIE_MAX_AGE = gateBodyAttr('data-lang-cookie-max-age', '31536000');
+var THEME_COOKIE = gateBodyAttr('data-theme-cookie', 'limooo_theme');
+var THEME_COOKIE_MAX_AGE = gateBodyAttr('data-theme-cookie-max-age', '31536000');
+function sharedCookieDomain() {
+  return location.hostname === ROOT_DOMAIN || location.hostname.endsWith('.' + ROOT_DOMAIN)
+    ? '; domain=.' + ROOT_DOMAIN
+    : '';
+}
+var CURRENT_LANG = gateBodyAttr('data-lang', DEFAULT_LANG);
 var gateVerificationInFlight = false;
 document.documentElement.lang = CURRENT_LANG;
 
@@ -21,7 +37,7 @@ document.documentElement.lang = CURRENT_LANG;
 })();
 
 function t(key) {
-  var dict = GATE_I18N[CURRENT_LANG] || GATE_I18N['en-us'] || {};
+  var dict = GATE_I18N[CURRENT_LANG] || GATE_I18N[DEFAULT_LANG] || {};
   return dict[key] !== undefined ? dict[key] : key;
 }
 
@@ -36,15 +52,15 @@ function getSystemTheme() {
 function effectiveTheme() {
   var saved = localStorage.getItem('theme');
   if (saved === 'light' || saved === 'dark') return saved;
-  var match = document.cookie.match(/(?:^|;\s*)limooo_theme=(light|dark)/);
+  var match = document.cookie.match(new RegExp('(?:^|;\\s*)' + THEME_COOKIE + '=(light|dark)'));
   return match ? match[1] : getSystemTheme();
 }
 
 function saveTheme(theme) {
   localStorage.setItem('theme', theme);
-  var domain = location.hostname.endsWith('limooo.cn') ? '; domain=.limooo.cn' : '';
   var secure = location.protocol === 'https:' ? '; Secure' : '';
-  document.cookie = 'limooo_theme=' + theme + '; path=/; max-age=31536000; SameSite=Lax' + secure + domain;
+  document.cookie = THEME_COOKIE + '=' + theme + '; path=/; max-age=' + THEME_COOKIE_MAX_AGE
+    + '; SameSite=Lax' + secure + sharedCookieDomain();
 }
 
 function applyTheme(theme) {
@@ -228,14 +244,14 @@ function renderI18n() {
 }
 
 function saveLangCookie(code) {
-  var rootDomain = CONFIG && CONFIG.root_domain
-    ? CONFIG.root_domain
-    : (location.hostname.endsWith('limooo.cn') ? 'limooo.cn' : '');
+  /* 根域名由 /gate/config 与 <body data-root-domain> 两处提供，优先取运行时配置。 */
+  var rootDomain = (CONFIG && CONFIG.root_domain) || ROOT_DOMAIN;
   var domain = rootDomain && (location.hostname === rootDomain || location.hostname.endsWith('.' + rootDomain))
     ? '; domain=.' + rootDomain
     : '';
   var secure = location.protocol === 'https:' ? '; Secure' : '';
-  document.cookie = 'user_lang_preference=' + code + '; path=/; max-age=31536000; SameSite=Lax' + secure + domain;
+  document.cookie = LANG_COOKIE + '=' + code + '; path=/; max-age=' + LANG_COOKIE_MAX_AGE
+    + '; SameSite=Lax' + secure + domain;
 }
 
 function fetchI18n(lang, cb) {

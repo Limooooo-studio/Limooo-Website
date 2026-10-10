@@ -1,5 +1,13 @@
 # ── Python ──
 __pycache__/
+.pytest_cache/
+.ruff_cache/
+
+# ── Python 覆盖率产物（pytest-cov / vitest --coverage） ──
+.coverage
+.coverage.*
+coverage/
+htmlcov/
 
 # ── macOS ──
 .DS_Store
@@ -21,8 +29,11 @@ node_modules/
 # ── wrangler 本地运行缓存 ──
 .wrangler/
 
-# ── Pages 本地构建环境（自动创建，不入库） ──
-.venv-build/
+# ── npm 恢复期留下的依赖备份（体积巨大，只能靠本规则挡住；见 docs/22 W8-2） ──
+node_modules.recovery-*
+
+# ── Pages 本地构建环境（自动创建，不入库；含 iCloud 冲突副本 ".venv-build 2"） ──
+.venv-build*/
 
 # ── Pages 构建产物（仅保留占位文件） ──
 public/*
@@ -54,6 +65,7 @@ secrets/
 # ── 本地运维文件 ──
 各种密钥.txt
 Logs/
+data/*.log
 
 # ── 服务器重置备份（数据库 dump 等，绝不入库） ──
 backup-limooo-*/

@@ -93,16 +93,51 @@ NOTE_ROW_KEYS = {
 }
 
 
-def _read_rows(filename: str) -> list[dict[str, str]]:
-    """读取单个 CSV，去掉表头与空行。"""
-    path = os.path.join(SERVICES_DIR, filename)
+def _cell(value: object) -> str:
+    """CSV 单元格 → 去空白的字符串（缺列是 ``None``，按空串处理）。"""
+    if isinstance(value, list):
+        return ",".join(str(item) for item in value).strip()
+    if value is None:
+        return ""
+    return str(value).strip()
+
+
+def _read_rows(filename: str, services_dir: str | None = None) -> list[dict[str, str]]:
+    """读取单个 CSV，去掉表头与空行。
+
+    ``services_dir`` 为 None 时用模块常量 ``SERVICES_DIR``（测试会 monkeypatch 它）。
+
+    两种「格式错」在这里分流：
+
+    - **表头重复**（``shots,price,price``）：``csv.DictReader`` 遇到重名会**静默只留
+      最后一列**（曾经渲染出 999 却毫无提示），所以直接 ``RuntimeError`` 并带文件名。
+    - **数据行字段数多于表头**（典型是把价格写成 ``1,000``，多出一个逗号）：
+      ``csv.DictReader`` 把多出来的字段塞进 ``row[None]``，值是 **list**——原样丢给
+      模板会在 ``v.strip()`` 上抛 ``AttributeError``。这里把溢出的字段拼回**最后一个
+      声明列**，于是 ``price`` 拿到 ``"1,000"``，:func:`_parse_price` 解析不出正整数
+      → ``None`` → 模板渲染成「-」。绝不猜价格（1 和 1000 都是错的）、也绝不抛异常。
+    """
+    directory = services_dir if services_dir is not None else SERVICES_DIR
+    path = os.path.join(directory, filename)
     try:
         with open(path, encoding="utf-8-sig", newline="") as f:
-            rows = [
-                {(k or "").strip(): (v or "").strip() for k, v in row.items()}
-                for row in csv.DictReader(f)
-                if any((v or "").strip() for v in row.values())
-            ]
+            reader = csv.DictReader(f)
+            fieldnames = [(name or "").strip() for name in (reader.fieldnames or [])]
+            duplicates = sorted({name for name in fieldnames if fieldnames.count(name) > 1})
+            if duplicates:
+                raise RuntimeError(
+                    f"{filename} has duplicate column(s): {', '.join(duplicates)}"
+                )
+            rows: list[dict[str, str]] = []
+            for raw in reader:
+                # 溢出列挂在 None 键上（list）；先摘掉再归一化其余单元格。
+                overflow = _cell(raw.pop(None, None))
+                row = {(key or "").strip(): _cell(value) for key, value in raw.items()}
+                if overflow and fieldnames:
+                    last = fieldnames[-1]
+                    row[last] = f"{row.get(last, '')},{overflow}"
+                if any(row.values()):
+                    rows.append(row)
     except OSError as exc:
         raise RuntimeError(f"cannot read price list {path}: {exc}") from exc
     if not rows:
@@ -137,10 +172,15 @@ def _parse_bookable(filename: str, lineno: int, row: dict[str, str]) -> bool:
     )
 
 
-def load_convention() -> list[dict[str, object]]:
-    """场照拍摄价目：按张数升序，返回 [{shots, price, unit_key, bookable}, ...]。"""
+def load_convention(services_dir: str | None = None) -> list[dict[str, object]]:
+    """场照拍摄价目：按张数升序，返回 [{shots, price, unit_key, bookable}, ...]。
+
+    ``services_dir`` 省略时用模块常量 ``SERVICES_DIR``；显式传入是为了让构建期
+    缓存（``render_app._cached_pricing``）能把目录纳入 cache key——测试用临时目录
+    替换 ``SERVICES_DIR`` 时必须自然失配，不能读到上一轮的 CSV。
+    """
     filename = CONVENTION_CSV
-    rows = _read_rows(filename)
+    rows = _read_rows(filename, services_dir)
     missing = {"shots", "price"} - set(rows[0])
     if missing:
         raise RuntimeError(f"{filename} is missing column(s): {', '.join(sorted(missing))}")
@@ -180,10 +220,10 @@ def load_convention() -> list[dict[str, object]]:
     return plans
 
 
-def load_outdoor() -> dict[tuple[str, str], dict[str, object]]:
-    """正片拍摄价目：{(type, people): {price, bookable}}。"""
+def load_outdoor(services_dir: str | None = None) -> dict[tuple[str, str], dict[str, object]]:
+    """正片拍摄价目：{(type, people): {price, bookable}}（``services_dir`` 同 load_convention）。"""
     filename = OUTDOOR_CSV
-    rows = _read_rows(filename)
+    rows = _read_rows(filename, services_dir)
     missing = {"type", "people", "price"} - set(rows[0])
     if missing:
         raise RuntimeError(f"{filename} is missing column(s): {', '.join(sorted(missing))}")
@@ -226,10 +266,14 @@ def outdoor_note_row(plans: dict[tuple[str, str], dict[str, object]]) -> dict[st
     }
 
 
-def load_pricing() -> dict[str, object]:
-    """读取两份 CSV，返回渲染 services.html 所需的价目表结构。"""
-    convention = load_convention()
-    outdoor_plans = load_outdoor()
+def load_pricing(services_dir: str | None = None) -> dict[str, object]:
+    """读取两份 CSV，返回渲染 services.html 所需的价目表结构。
+
+    ``services_dir`` 省略时用模块常量 ``SERVICES_DIR``；构建期的缓存包装会把
+    实际目录作为参数传进来（见 ``render_app._cached_pricing``）。
+    """
+    convention = load_convention(services_dir)
+    outdoor_plans = load_outdoor(services_dir)
     outdoor = [
         {
             "plan_key": OUTDOOR_PLAN_KEYS[key],

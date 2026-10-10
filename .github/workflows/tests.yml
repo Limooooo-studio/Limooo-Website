@@ -1,5 +1,8 @@
 name: tests
 
+# Step set must stay identical to ops/ci_check.sh (the local replica of this file).
+# Coverage steps only report; they never fail the build (no thresholds yet).
+
 on:
   push:
   pull_request:
@@ -12,8 +15,9 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - run: pip install -r ops/requirements.txt pytest
-      - run: python -m pytest
+      - run: pip install -r ops/requirements.txt pytest pytest-cov
+      - run: python -m pytest -q --cov=src --cov-report=term-missing
+      - run: python ops/check_security_headers.py
       - run: python ops/readme_facts.py --check
 
   typescript:
@@ -28,3 +32,4 @@ jobs:
       - run: npm run typecheck
       - run: bash ops/migrate_d1.sh --dry-run
       - run: npm test
+      - run: npm run test:coverage

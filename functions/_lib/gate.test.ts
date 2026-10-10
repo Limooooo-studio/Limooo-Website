@@ -96,7 +96,7 @@ describe("handleVerify", () => {
   }
 
   it("issues the gate cookie to fetch clients without a redirect", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({ success: true })));
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({ success: true, hostname: "limooo.cn" })));
 
     const resp = await handleVerify(verifyContext(verifyRequest("application/json")));
 
@@ -114,7 +114,7 @@ describe("handleVerify", () => {
   });
 
   it("sends non-JavaScript form posts directly back to the requested host", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({ success: true })));
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({ success: true, hostname: "limooo.cn" })));
 
     const resp = await handleVerify(verifyContext(verifyRequest("text/html")));
 
@@ -123,8 +123,24 @@ describe("handleVerify", () => {
     vi.unstubAllGlobals();
   });
 
+  it("fails closed when GATE_HMAC_KEY is missing instead of signing with an empty key", async () => {
+    // handleVerify 此前只检查 TURNSTILE_SECRET；GATE_HMAC_KEY 为空时它会继续签发
+    // 一枚用空密钥签的 __gate cookie（今天靠中间件的 runtimeConfigError 兜住，
+    // 但「中间件路由缺失时的兜底入口」自己必须有这道门）。
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({ success: true, hostname: "limooo.cn" })));
+    const resp = await handleVerify({
+      request: verifyRequest("application/json"),
+      env: { TURNSTILE_SECRET: "turnstile-secret" },
+      next: async () => new Response("next"),
+    } as never);
+
+    expect(resp.status).toBe(503);
+    expect(resp.headers.get("Set-Cookie")).toBeNull();
+    vi.unstubAllGlobals();
+  });
+
   it("passes CF-Connecting-IP to siteverify, ignoring spoofed forwarded headers", async () => {
-    const fetchMock = vi.fn().mockResolvedValue(Response.json({ success: true }));
+    const fetchMock = vi.fn().mockResolvedValue(Response.json({ success: true, hostname: "limooo.cn" }));
     vi.stubGlobal("fetch", fetchMock);
 
     const form = new FormData();
@@ -147,6 +163,59 @@ describe("handleVerify", () => {
     const body = new URLSearchParams(String((fetchMock.mock.calls[0][1] as RequestInit).body));
     expect(body.get("remoteip")).toBe("43.108.57.161");
     expect(body.get("remoteip")).not.toBe("1.2.3.4");
+    vi.unstubAllGlobals();
+  });
+
+  /**
+   * W9-16：siteverify 返回的 hostname / action 一并校验（纵深防御）。
+   *
+   * 同一个 sitekey 若被加到别的域名或别的组件（widget）上，其它站点解出的 token
+   * 也能通过我们的 siteverify —— 只校验 success 就等于把「本站访客」的定义
+   * 交给 Cloudflare 与 sitekey 配置。这里按 managed hosts 收紧。
+   */
+  it("rejects a token solved on a host we do not manage", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        Response.json({ success: true, hostname: "evil.example", action: "gate" }),
+      ),
+    );
+    const resp = await handleVerify(verifyContext(verifyRequest("application/json")));
+    expect(resp.status).toBe(403);
+    expect(resp.headers.get("Set-Cookie")).toBeNull();
+    expect(await resp.json()).toMatchObject({ ok: false, error: "failed" });
+    vi.unstubAllGlobals();
+  });
+
+  it("accepts every host the contract manages", async () => {
+    for (const hostname of ["limooo.cn", "services.limooo.cn", "visitor.limooo.cn"]) {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn().mockResolvedValue(Response.json({ success: true, hostname, action: "gate" })),
+      );
+      const resp = await handleVerify(verifyContext(verifyRequest("application/json")));
+      expect(resp.status, hostname).toBe(204);
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("rejects a token solved for a different widget action", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        Response.json({ success: true, hostname: "limooo.cn", action: "newsletter" }),
+      ),
+    );
+    const resp = await handleVerify(verifyContext(verifyRequest("application/json")));
+    expect(resp.status).toBe(403);
+    vi.unstubAllGlobals();
+  });
+
+  it("rejects a siteverify response with no hostname at all", async () => {
+    // 缺 hostname 时不能按「没给就别管」放行，否则这份纵深防御等于可被省略。
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({ success: true })));
+    const resp = await handleVerify(verifyContext(verifyRequest("application/json")));
+    expect(resp.status).toBe(403);
     vi.unstubAllGlobals();
   });
 });

@@ -43,6 +43,19 @@
 # "full deploy" contract in AGENTS.md. To ship only what is already committed locally,
 # pass --pages / --docs explicitly.
 #
+# commit / push require the current branch to be "main": this script compares HEAD with
+# origin/main but pushes refs/heads/main, so on a feature branch the commit would land
+# on the feature branch while the edge got built from a tree GitHub never saw. Any
+# other branch (including a detached HEAD) aborts with FATAL (exit 2).
+#
+# --pages and --docs build the WORKING TREE, so they run ops/ci_check.sh first and
+# refuse to deploy when the tree has uncommitted changes. Emergency override:
+#   LIMOOO_ALLOW_DIRTY=1 bash ops/deploy.sh --pages
+#
+# --worker= needs a non-empty Worker name: an empty value used to fall through to the
+# "no arguments = --all" branch and silently became a full deploy. It is rejected with
+# FATAL (exit 2).
+#
 # Before commit / push this runs ops/ci_check.sh (a local replica of
 # .github/workflows/tests.yml): build first, then typecheck / tests. Any failure
 # aborts, so nothing is committed or pushed. The checks run against the STAGED tree
@@ -58,7 +71,8 @@
 # Environment:
 #   LIMOOO_DEPLOY_VERBOSE=1   same as --full
 #   LIMOOO_SKIP_DOCS=1        drop the docs.limooo.cn step
-#   LIMOOO_SKIP_CHECKS=1      skip the local CI replica before commit / push
+#   LIMOOO_SKIP_CHECKS=1      skip the local CI replica before commit / push / Pages / docs
+#   LIMOOO_ALLOW_DIRTY=1      deploy --pages / --docs with a dirty working tree
 #   LIMOOO_ALLOW_PUSH_FAIL=1  deploy even when git push fails (emergency only)
 #   LIMOOO_GIT_FILE_LIST_LIMIT=N  max file names printed per commit (default 20)
 # Credentials are read from local secrets/webauthn.env; never written to disk or echoed.
@@ -89,7 +103,21 @@ while [ $# -gt 0 ]; do
         --docs) DO_DOCS=1 ;;
         --all) DO_COMMIT=1; DO_PUSH=1; DO_PAGES=1; DO_DOCS=1 ;;
         --full) VERBOSE=1 ;;
-        --worker=*) WORKER="${1#--worker=}" ;;
+        --worker=*)
+            WORKER="${1#--worker=}"
+            # 空值（`--worker=$W` 且 $W 为空）会让下面的"无参数 = --all"分支成立，
+            # 静默变成 commit + push + Pages + docs 的完整部署（W3-2）。
+            if [ -z "$WORKER" ]; then
+                echo "FATAL: --worker= needs a Worker name (for example --worker=status-worker)" >&2
+                exit 2
+            fi
+            case "$WORKER" in
+                *[!A-Za-z0-9._-]*)
+                    echo "FATAL: invalid Worker name '$WORKER' (allowed: letters, digits, dot, underscore, hyphen)" >&2
+                    exit 2
+                    ;;
+            esac
+            ;;
         --message=*) COMMIT_MESSAGE="${1#--message=}" ;;
         -m)
             if [ $# -lt 2 ]; then
@@ -122,6 +150,40 @@ if [ "${LIMOOO_SKIP_DOCS:-0}" = 1 ]; then
     DO_DOCS=0
 fi
 
+# ── ⓪0 分支断言：commit / push 只能在 main 上做（W3-1）───────────────
+# 历史 bug：脚本比的是 HEAD、推的却是 refs/heads/main。在特性分支上跑完整部署时，
+# 提交进特性分支 → push main（通常 no-op，却仍打印 "pushed"）→ 随后用**特性分支的
+# 工作树**构建 Pages：边缘于是跑在 GitHub 前面，正好破坏本脚本自己的顺序保证。
+# 断言放在 --dry-run 之前：dry-run 也要如实报出「这条路走不通」。
+IN_GIT_TREE=0
+if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    IN_GIT_TREE=1
+fi
+CURRENT_BRANCH=""
+if [ "$IN_GIT_TREE" = 1 ]; then
+    CURRENT_BRANCH="$(git symbolic-ref --short -q HEAD 2>/dev/null || git rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+fi
+BRANCH_LABEL="$CURRENT_BRANCH"
+if [ "$CURRENT_BRANCH" = "HEAD" ]; then
+    BRANCH_LABEL="detached HEAD"
+elif [ -z "$CURRENT_BRANCH" ]; then
+    BRANCH_LABEL="unknown"
+fi
+
+if [ "$IN_GIT_TREE" = 1 ] && { [ "$DO_COMMIT" = 1 ] || [ "$DO_PUSH" = 1 ]; }; then
+    if [ "$CURRENT_BRANCH" != "main" ]; then
+        echo "FATAL: commit/push must run on branch main (current: $BRANCH_LABEL)" >&2
+        echo "       switch to main first (git switch main) and rerun; this script pushes refs/heads/main only" >&2
+        exit 2
+    fi
+fi
+
+# Pages / docs / Worker 也从当前分支的工作树构建，非 main 时至少要说清后果（不阻断）。
+if [ "$IN_GIT_TREE" = 1 ] && [ "$CURRENT_BRANCH" != "main" ] \
+    && { [ "$DO_PAGES" = 1 ] || [ "$DO_DOCS" = 1 ] || [ -n "$WORKER" ]; }; then
+    echo "Warning: not on branch main (current: $BRANCH_LABEL); this deploys a tree GitHub does not have yet"
+fi
+
 # 跑一个子步骤。两种模式：
 #   安静（默认）：输出收进临时日志，成功只打一行 "<tag>: done"，
 #                 失败打 "<tag>: FAILED -- full log follows" 并把完整日志吐到 stderr。
@@ -149,20 +211,20 @@ run_step() {
 
 if [ "$DRY_RUN" = 1 ]; then
     echo "Deploy: start (dry-run)"
+    [ "$IN_GIT_TREE" = 1 ] && echo "  branch: $BRANCH_LABEL"
     [ "$DO_COMMIT" = 1 ] && echo "  would-run: git add -A && git commit"
     [ "$DO_PUSH" = 1 ] && echo "  would-run: git push origin main"
-    { [ "$DO_COMMIT" = 1 ] || [ "$DO_PUSH" = 1 ]; } && echo "  would-run: bash ops/ci_check.sh"
+    { [ "$DO_COMMIT" = 1 ] || [ "$DO_PUSH" = 1 ]; } && echo "  requires: branch main (FATAL exit 2 on any other branch)"
+    { [ "$DO_COMMIT" = 1 ] || [ "$DO_PUSH" = 1 ] || [ "$DO_PAGES" = 1 ] || [ "$DO_DOCS" = 1 ]; } && echo "  would-run: bash ops/ci_check.sh (skip with LIMOOO_SKIP_CHECKS=1)"
     [ "$DO_PAGES" = 1 ] && echo "  would-run: bash ops/pages_deploy.sh"
     [ "$DO_DOCS" = 1 ] && echo "  would-run: bash ops/docs_deploy.sh"
+    { [ "$DO_PAGES" = 1 ] || [ "$DO_DOCS" = 1 ]; } && echo "  requires: clean working tree (override with LIMOOO_ALLOW_DIRTY=1)"
     [ -n "$WORKER" ] && echo "  would-run: bash ops/workers_deploy.sh --worker=$WORKER"
     echo "Deploy: dry-run done"
     exit 0
 fi
 
 echo "Deploy: start"
-
-IN_GIT_TREE=0
-git rev-parse --is-inside-work-tree >/dev/null 2>&1 && IN_GIT_TREE=1
 
 # --full 下回显要跑的命令；安静模式下不打扰（git 本来就无声）
 show_cmd() {
@@ -201,17 +263,56 @@ if [ "$DO_COMMIT" = 1 ] && [ "$IN_GIT_TREE" = 1 ]; then
     STAGED_TREE_BEFORE="$(worktree_snapshot)"
 fi
 
-# ── ⓪b 本地 CI 复刻（必须先于 commit / push）──────────────────────────
+# ── ⓪b 本地 CI 复刻（必须先于 commit / push / Pages / docs）────────────
 # 历史教训：CI 是「先 build 再 typecheck / 测试」，而本地只跑过 vitest/pytest，
 # 于是「本地全绿、push 完 30 秒收到失败通知」。这里把 CI 原样跑一遍。
-# --commit 时检查的是**已暂存内容**：工作区未被忽略的改动已经在 ⓪a 全部 stage。
-if [ "$DO_COMMIT" = 1 ] || [ "$DO_PUSH" = 1 ]; then
+#
+# 检查对象必须与「要发出去的那棵树」一致（W3-3）：
+#   --commit         → 已暂存内容（工作区未被忽略的改动已在 ⓪a 全部 stage）
+#   --push（不提交） → 将要推送的 HEAD
+#   --pages / --docs → 直接构建的工作树（pages_deploy.sh / docs_deploy.sh 都从工作树构建）
+NEED_CHECKS=0
+if [ "$DO_COMMIT" = 1 ] || [ "$DO_PUSH" = 1 ] || [ "$DO_PAGES" = 1 ] || [ "$DO_DOCS" = 1 ]; then
+    NEED_CHECKS=1
+fi
+
+# 脏树闸门（W3-3）：Pages / docs 直接构建工作树，工作树与任何 commit 不一致时
+# 部署的就是「没被 CI 检查过、也没进 GitHub」的内容。不提交时先挡（省一次 CI），
+# 提交时在 commit 之后再挡（那时 ⓪a 的 git add 已经被提交清掉）。
+# 判定用与 ⓪a 相同的 pathspec，gitignore 的文件不算脏。
+dirty_tree_gate() {
+    local dirty_paths
+    if [ "$IN_GIT_TREE" = 0 ]; then
+        echo "Warning: not a git work tree; cannot verify that Pages matches a commit" >&2
+        return 0
+    fi
+    dirty_paths="$(git status --porcelain -- . ':!limooo.cn.png')"
+    if [ -z "$dirty_paths" ]; then
+        return 0
+    fi
+    if [ "${LIMOOO_ALLOW_DIRTY:-0}" = 1 ]; then
+        echo "Warning: deploying a dirty working tree (LIMOOO_ALLOW_DIRTY=1)"
+        return 0
+    fi
+    echo "FATAL: working tree has uncommitted changes; Pages/docs build the working tree" >&2
+    printf '%s\n' "$dirty_paths" | sed 's/^/       /' >&2
+    echo "       commit them first, or set LIMOOO_ALLOW_DIRTY=1 to deploy them on purpose" >&2
+    exit 1
+}
+
+if [ "$DO_COMMIT" = 0 ] && { [ "$DO_PAGES" = 1 ] || [ "$DO_DOCS" = 1 ]; }; then
+    dirty_tree_gate
+fi
+
+if [ "$NEED_CHECKS" = 1 ]; then
     if [ "${LIMOOO_SKIP_CHECKS:-0}" = 1 ]; then
         echo "Check: skipped (LIMOOO_SKIP_CHECKS=1)"
     elif [ "$DO_COMMIT" = 1 ]; then
         run_step "Check" bash ops/ci_check.sh
-    else
+    elif [ "$DO_PUSH" = 1 ]; then
         run_step "Check" bash ops/ci_check.sh --ref=HEAD
+    else
+        run_step "Check" bash ops/ci_check.sh
     fi
 fi
 
@@ -302,6 +403,13 @@ if [ "$DO_PUSH" = 1 ]; then
             exit 1
         fi
     fi
+fi
+
+# ── ②b 脏树闸门（提交之后再验一次）──────────────────────────────────
+# --commit 时 ⓪a 的 git add 会把未提交改动全部提交掉，所以这里要在 commit 之后
+# 才能判断「提交完还剩没剩脏东西」；--pages / --docs 单独跑时已在 ⓪b 之前挡过。
+if [ "$DO_COMMIT" = 1 ] && { [ "$DO_PAGES" = 1 ] || [ "$DO_DOCS" = 1 ]; }; then
+    dirty_tree_gate
 fi
 
 # ── ③ Pages：只在失败时吐出日志，成功时只留一行状态 ─────────────────

@@ -5,9 +5,11 @@ import { onRequestGet } from "./ip";
 import { queryAll } from "../../../_lib/d1";
 import { requireAuth } from "../../../_lib/session";
 import { fernetEncrypt } from "../../../_lib/fernet";
+import { logEvent } from "../../../_lib/logging";
 import type { Env } from "../../../_lib/env";
 
 vi.mock("../../../_lib/d1", () => ({ queryAll: vi.fn() }));
+vi.mock("../../../_lib/logging", () => ({ logEvent: vi.fn() }));
 vi.mock("../../../_lib/session", () => ({
   requireAuth: vi.fn(),
   authUnavailableResponse: vi.fn(() => new Response("unavailable", { status: 503 })),
@@ -103,5 +105,59 @@ describe("visitor ip API", () => {
     );
     expect(resp.status).toBe(500);
     expect((await resp.json()).error).toBe("ip_unavailable");
+  });
+
+  /**
+   * W9-4：解密明文 IP 是最敏感的读操作。同类的密码查看（reveal.ts）一直有审计，
+   * 这里此前一条都没有 —— 「谁在什么时候看了哪个访客的真实 IP」无从追溯。
+   */
+  describe("audit trail", () => {
+    function auditCall() {
+      return vi.mocked(logEvent).mock.calls.find((call) => call[1] === "audit_event");
+    }
+
+    it("writes an audit row on success without the plaintext IP", async () => {
+      const token = await fernetEncrypt("8.8.8.8", TEST_KEY);
+      vi.mocked(queryAll).mockResolvedValueOnce([{ ip_enc: token }]);
+
+      const resp = await onRequestGet(
+        context(HASH, { VISITOR_IP_KEY: TEST_KEY } as Env) as never,
+      );
+      expect(resp.status).toBe(200);
+
+      const audit = auditCall();
+      expect(audit, "解密成功必须写 audit_event").toBeTruthy();
+      const details = audit?.[3] as { outcome?: string; status?: number; message?: string };
+      expect(details?.outcome).toBe("visitor_ip_revealed");
+      expect(details?.status).toBe(200);
+      // 审计里只能有哈希，不能出现明文 IP。
+      expect(JSON.stringify(vi.mocked(logEvent).mock.calls)).not.toContain("8.8.8.8");
+      expect(details?.message).toContain(HASH);
+    });
+
+    it("writes an audit row when the decryption fails", async () => {
+      vi.mocked(queryAll).mockResolvedValueOnce([{ ip_enc: "not-a-fernet-token" }]);
+      const resp = await onRequestGet(
+        context(HASH, { VISITOR_IP_KEY: TEST_KEY } as Env) as never,
+      );
+      expect(resp.status).toBe(500);
+      const details = auditCall()?.[3] as { outcome?: string; status?: number } | undefined;
+      expect(details?.outcome).toBe("visitor_ip_decrypt_failed");
+      expect(details?.status).toBe(500);
+    });
+
+    it("writes an audit row when the key is missing or the row has no ciphertext", async () => {
+      const noKey = await onRequestGet(context(HASH, {} as Env) as never);
+      expect(noKey.status).toBe(503);
+      expect((auditCall()?.[3] as { outcome?: string })?.outcome).toBe("visitor_ip_unavailable");
+
+      vi.mocked(logEvent).mockClear();
+      vi.mocked(queryAll).mockResolvedValueOnce([]);
+      const noRow = await onRequestGet(
+        context(HASH, { VISITOR_IP_KEY: TEST_KEY } as Env) as never,
+      );
+      expect(noRow.status).toBe(404);
+      expect((auditCall()?.[3] as { outcome?: string })?.outcome).toBe("visitor_ip_missing");
+    });
   });
 });

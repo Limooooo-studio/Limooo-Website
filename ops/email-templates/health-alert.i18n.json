@@ -1,50 +1,8 @@
 {
-  "meta": {
-    "template": "health-alert",
-    "description": "Limooo 健康检查告警邮件四语种文案。",
-    "sender": "no-reply-<N>@limooo.cn",
-    "default_reply_to": "contact@limooo.cn",
-    "footer_brand": "Limooo",
-    "footer_suffix": "Studio"
-  },
-  "zh-cn": {
-    "subject": "[Limooo] 健康检查告警",
-    "title": "发现服务异常",
-    "intro": "Limooo 自动监控检测到以下异常，请尽快处理：",
-    "alerts_heading": "告警项",
-    "metrics_heading": "关键指标（最近 1 小时）",
-    "view_monitors": "查看监控后台",
-    "hint": "本邮件由 Limooo 自动健康检查发送。若持续收到，请检查服务器、D1 或门禁服务，并在管理后台确认恢复状态。",
-    "footer_rights": "保留所有权利"
-  },
-  "en-us": {
-    "subject": "[Limooo] Health Check Alert",
-    "title": "Service Issues Detected",
-    "intro": "Limooo automatic monitoring detected the following issues; please review them soon:",
-    "alerts_heading": "Alerts",
-    "metrics_heading": "Key metrics (last hour)",
-    "view_monitors": "Open monitoring dashboard",
-    "hint": "This email was sent by Limooo automated health checks. If alerts continue, inspect the server, D1, or gate services and confirm recovery in the dashboard.",
-    "footer_rights": "All rights reserved"
-  },
-  "ja-jp": {
-    "subject": "[Limooo] ヘルスチェック異常",
-    "title": "サービスに異常が発生しました",
-    "intro": "Limooo の自動監視で以下の異常を検出しました。早めに確認してください。",
-    "alerts_heading": "アラート",
-    "metrics_heading": "主要メトリクス（直近 1 時間）",
-    "view_monitors": "監視ダッシュボードを開く",
-    "hint": "このメールは Limooo の自動ヘルスチェックから送信されています。異常が続く場合は、サーバー、D1、またはゲートサービスを確認してください。",
-    "footer_rights": "無断転載禁止"
-  },
-  "ko-kr": {
-    "subject": "[Limooo] 상태 점검 경고",
-    "title": "서비스 이상이 감지되었습니다",
-    "intro": "Limooo 자동 모니터링에서 아래 이상을 감지했습니다. 빠르게 확인해 주세요.",
-    "alerts_heading": "경고 항목",
-    "metrics_heading": "주요 지표 (최근 1시간)",
-    "view_monitors": "모니터링 대시보드 열기",
-    "hint": "이 메일은 Limooo 자동 상태 점검에서 발송되었습니다. 경고가 계속되면 서버, D1 또는 게이트 서비스를 확인해 주세요.",
-    "footer_rights": "모든 권리 보유"
-  }
+  "_deprecated": true,
+  "_deprecated_since": "2026-10-11",
+  "_owner": "ops/status-worker/src/index.ts (ALERT_I18N + buildAlertEmail)",
+  "_why": "docs/22 W7-13: this file held a second copy of the alert mail copy while the status Worker inlined its own ALERT_I18N, and the two had already drifted. Two sources for the same mail is worse than none.",
+  "_what_to_edit": "ALERT_I18N in ops/status-worker/src/index.ts. Its four languages (zh-cn / en-us / ja-jp / ko-kr) are asserted by ops/status-worker/src/index.test.ts.",
+  "_note": "Kept only as a tombstone so the reference from index.ts still resolves. It carries no alert copy and must not grow one again."
 }

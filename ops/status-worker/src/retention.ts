@@ -2,15 +2,18 @@
  * D1 保留任务（从 VPS 的 ops/prune_d1.py 迁移，docs/17 阶段 6）
  *
  * VPS 退役后原 cron 不复存在，若不迁移，D1 会无限增长直至撞上单库上限。
- * 保留窗口与 prune_d1.py 的 BUCKETS 保持一致。
  *
- * 注意：prune_d1.py 还有「每小时把访客明细聚合进 visitor_rollups」的部分，
- * 本文件目前只做**每日清理**（防爆库的关键路径）；聚合迁移见 docs/18 待办。
+ * **本文件是保留策略的 owner**（docs/22 W7-8）：它是被 cron 调度的那一份，
+ * `ops/readme_facts.py` 与 `ops/prune_d1.py` 都从这里读窗口；prune_d1.py 在导入时
+ * 与本文件逐条比对，不一致直接报错，所以两份策略不可能再各自漂移。
+ *
+ * 注意：prune_d1.py 还有「把访客明细聚合进 visitors_daily」的部分（手动入口），
+ * 本文件只做**每日清理**（防爆库的关键路径）。
  */
 
 export const DAY_SECONDS = 86_400;
 
-/** 表 → 保留秒数（与 ops/prune_d1.py 的 BUCKETS 对齐）。 */
+/** 表 → 保留秒数（owner；ops/prune_d1.py 从本文件读同一份值）。 */
 export const BUCKETS: Record<string, number> = {
   ray_log_v2: 7 * DAY_SECONDS,
   visitors_v2: 30 * DAY_SECONDS,
@@ -20,12 +23,17 @@ export const BUCKETS: Record<string, number> = {
   heartbeats: 30 * DAY_SECONDS,
   // 按天在线率汇总只保留 90 天（状态页最多看 7 天）。
   probe_uptime_daily: 90 * DAY_SECONDS,
+  // 每次登录写一行（`functions/login.ts` 的 createAuthSession），此前没有任何
+  // 清理路径，只增不减。窗口取 60 天：必须**长于** session_ttl_seconds（30 天，
+  // 见 config-contract.json），否则会在会话仍有签名有效期时把行删掉（登录态被踢）。
+  auth_sessions: 60 * DAY_SECONDS,
 };
 
 /** 非默认时间戳列。 */
 export const TIMESTAMP_COLUMNS: Record<string, string> = {
   visitor_rollups: "last_ts",
   probe_uptime_daily: "day",
+  auth_sessions: "exp",
 };
 
 export interface PruneResult {

@@ -28,6 +28,9 @@ interface BlockedRow {
 const DEFAULT_PAGE_SIZE = 50;
 const MAX_PAGE_SIZE = 200;
 
+/** 封禁理由的长度上限：与其余字符串字段的 cap 口径一致，防单行写爆库。 */
+const BLOCKLIST_REASON_MAX_LENGTH = 255;
+
 function pageParams(url: URL): { page: number; pageSize: number; offset: number } {
   const page = Math.max(1, Number.parseInt(url.searchParams.get("page") ?? "1", 10) || 1);
   const pageSize = Math.min(
@@ -104,7 +107,12 @@ export const onRequestPost: PagesFunction<Env> = async (context) => {
   if (!parsed) {
     return Response.json({ error: "invalid cidr" }, { status: 400 });
   }
-  const reason = typeof (body as { reason?: unknown }).reason === "string" ? (body as { reason: string }).reason : "";
+  // 理由必须限长：其余字符串字段都有 cap，这里以前没有，一个请求就能写入
+  // 几百 KB。分页响应会被撑爆、500 MB 库容量被吃掉，而且审计行与变更在同一
+  // 批次里，语句过大时连审计一起丢（等于变更没有留痕）。
+  const rawReason =
+    typeof (body as { reason?: unknown }).reason === "string" ? (body as { reason: string }).reason : "";
+  const reason = rawReason.slice(0, BLOCKLIST_REASON_MAX_LENGTH);
   const actor = await actorOf(session);
   const now = "datetime('now')";
   const mutationSql =

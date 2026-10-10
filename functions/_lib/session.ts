@@ -324,7 +324,10 @@ export async function requireRecentAdminSession(
   if (auth instanceof Response) return auth;
   const now = Math.floor(Date.now() / 1000);
   const age = now - auth.session.authAt;
-  if (!Number.isFinite(age) || age > maxAgeSeconds) {
+  // 只判上界会让**未来**的 authAt 永远通过（age 为负）。今天不可利用——authAt 由
+  // 签名 cookie 携带、只有 Access 能签发——但这是守护「明文密码查看」的唯一一道门，
+  // 方向必须封闭（门禁 cookie 已有同样的 future 守卫）。
+  if (!Number.isFinite(age) || age < 0 || age > maxAgeSeconds) {
     return Response.json(
       { error: REAUTH_REQUIRED_MESSAGE, reauth: true },
       { status: 401, headers: { "Cache-Control": "no-store" } },

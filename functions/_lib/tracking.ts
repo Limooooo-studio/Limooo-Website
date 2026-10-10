@@ -9,7 +9,7 @@
  * - 埋点失败只输出控制台，不阻塞业务、不递归写错误事件。
  */
 
-import { execute } from "./d1";
+import { execute, executeBatch } from "./d1";
 import type { Env } from "./env";
 import { ipHash } from "./logging";
 import { encryptVisitorIp } from "./visitor-ip";
@@ -18,6 +18,9 @@ import { IMAGES_HOSTNAME, REDIRECT_HOSTNAME } from "./config";
 import { clientCountryForLogs, clientIpForLogs } from "./routing";
 
 let trackingSchemaReady = false;
+/** 上次尝试建表的时间戳（毫秒）；见 ensureTrackingSchema 与 docs/22 W9-19。 */
+let trackingSchemaAttemptAt = 0;
+const SCHEMA_RETRY_COOLDOWN_MS = 60_000;
 
 const TRACKING_DDL = [
   `CREATE TABLE IF NOT EXISTS visitor_rollups (
@@ -123,15 +126,51 @@ export function shouldTrackVisit(request: Request, url: URL): boolean {
   ) {
     return false;
   }
+  if (isGateEndpointPath(p)) return false;
   return !/\.(png|webp|jpg|jpeg|gif|ico|svg|css|js|json|webmanifest|txt|xml)$/i.test(p);
 }
 
-/** Ray 记录只保留页面和少量入口；静态、全部 API、图片/跳转子域不记。
- *  门禁诊断路径例外：auth 页显示的 Ray ID 来自 /__gate/diag，必须可反查。 */
+/** `/__gate/...`（旧前缀，308 中转）与 `/gate/...`（规范化路径）归一到同一形式。 */
+function normalizeGatePath(pathname: string): string {
+  return pathname.startsWith("/__gate")
+    ? `/gate${pathname.slice("/__gate".length)}`
+    : pathname;
+}
+
+/**
+ * 门禁页自身的**接口**路径：前端加载门禁页时依次调用 `/gate/config`（补 sitekey、
+ * 文案、root domain）与 `/gate/diag`（显示可反查的 Ray ID），验证表单 POST `/gate/verify`。
+ *
+ * 这些请求都属于门禁页自己，不是访客在浏览页面，**访问统计一律不记**。
+ *
+ * 历史坑：排除名单里只写了旧前缀 `/__gate`，前端实际打的是 `/gate/config` 与
+ * `/gate/diag`（`/__gate` 只是 308 中转）。于是未验证访客每看一次门禁页就换 1–2 条
+ * D1 写入，任何人（含扫描器）都能匿名放大写额度——正是 2026-09-17 事故的形态。
+ */
+function isGateEndpointPath(pathname: string): boolean {
+  const p = normalizeGatePath(pathname);
+  return p === "/gate/config" || p === "/gate/verify" || p === "/gate/diag";
+}
+
+/**
+ * 门禁页里**唯一允许记 Ray** 的路径。
+ *
+ * 用显式白名单而不是「从黑名单里挑几个排除」：以后再加 `/gate/*` 接口时，
+ * 忘记登记只会漏记（可接受），不会像黑名单那样悄悄开始按请求写库。
+ * 必须保留它的原因：门禁页展示的 Ray ID 要能在 Ray 日志里反查。
+ */
+function isTraceableGatePath(pathname: string): boolean {
+  const p = normalizeGatePath(pathname);
+  return p === "/gate/diag";
+}
+
+/** Ray 记录只保留页面和少量入口；静态、全部 API、门禁接口、图片/跳转子域不记。
+ *  例外：`/gate/diag`（auth 页展示的 Ray ID 必须可反查）。 */
 export function shouldTrackRay(request: Request, url: URL): boolean {
   if (request.method !== "GET" && request.method !== "POST" && request.method !== "PUT" && request.method !== "DELETE") return false;
   if (url.hostname === IMAGES_HOSTNAME || url.hostname === REDIRECT_HOSTNAME) return false;
   const p = url.pathname;
+  if (isTraceableGatePath(p)) return true;
   if (
     p.startsWith("/api/") ||
     p === "/_health" ||
@@ -139,20 +178,38 @@ export function shouldTrackRay(request: Request, url: URL): boolean {
   ) {
     return false;
   }
+  if (isGateEndpointPath(p)) return false;
   if (p.startsWith("/favicon") || p === "/Limooo-xtext.svg") return false;
   if (/\.(png|webp|jpg|jpeg|gif|ico|svg|css|js|json|webmanifest|txt|xml)$/i.test(p)) return false;
   return true;
 }
 
+/**
+ * 每个 isolate 首次写入前幂等建表（docs/22 W9-19）。
+ *
+ * 与 `logging.ts` 的 ensureEventSchema 同一策略：记住「已尝试」+ 每分钟最多重试
+ * 一次（D1 故障期间不能让每个请求都先打一批必然失败的 DDL），并把多条 DDL 压成
+ * 一次 `db.batch` 往返；只有 `db.batch` 不存在时才退回逐句执行。
+ */
 async function ensureTrackingSchema(env: Env): Promise<void> {
   if (trackingSchemaReady || !env.DB) return;
+  const now = Date.now();
+  if (now - trackingSchemaAttemptAt < SCHEMA_RETRY_COOLDOWN_MS) return;
+  trackingSchemaAttemptAt = now;
   try {
+    const db = env.DB;
+    if (db.batch) {
+      if (await executeBatch(db, TRACKING_DDL.map((sql) => db.prepare(sql)))) {
+        trackingSchemaReady = true;
+      }
+      return;
+    }
     for (const sql of TRACKING_DDL) {
       if (!(await execute(env.DB, sql))) return;
     }
     trackingSchemaReady = true;
   } catch {
-    // 下次请求重试；埋点失败不影响业务。
+    // 冷却窗口过后重试；埋点失败不影响业务。
   }
 }
 

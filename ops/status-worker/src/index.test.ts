@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import {
+import worker, {
   ProbeState,
   buildAlertEmail,
   esc,
@@ -7,6 +7,7 @@ import {
   record,
   renderStatusPage,
   runProbe,
+  deliverAlert,
   sendAlert,
   statusKey,
   statusPayload,
@@ -382,5 +383,204 @@ describe("alert email", () => {
     );
     expect(r.sent).toBe(true);
     expect(JSON.stringify(captured)).toContain("ops@example.com");
+  });
+});
+
+/**
+ * 告警通道优先级（AGENTS.md：ALERT_WEBHOOK_URL 优先，Email binding 为后备）。
+ *
+ * 回归：webhook 排在最贵的 SMTP 之后，而且**任一通道失败都直接 return**，
+ * 于是「webhook 配了、SMTP 挂了」= 告警静默丢失。
+ */
+describe("alert channel priority", () => {
+  const mail = buildAlertEmail("zh-cn", "down", "Website", "http_503", 1_700_000_000);
+  const emailEnv = (captured: { value: unknown }) => ({
+    ALERT_TO: "ops@example.com",
+    EMAIL: { send: async (m: unknown) => void (captured.value = m) },
+  });
+
+  it("prefers the webhook over the Email binding", async () => {
+    const captured = { value: null as unknown };
+    const fetchSpy = vi.fn(async () => new Response("", { status: 200 }));
+    vi.stubGlobal("fetch", fetchSpy);
+    const r = await deliverAlert(
+      { ...emailEnv(captured), ALERT_WEBHOOK_URL: "https://open.feishu.cn/hook" } as unknown as Env,
+      mail,
+    );
+    expect(r).toEqual({ sent: true, via: "webhook" });
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(captured.value).toBeNull();
+    vi.unstubAllGlobals();
+  });
+
+  it("falls back to the Email binding when the webhook fails", async () => {
+    const captured = { value: null as unknown };
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("nope", { status: 500 })));
+    const r = await deliverAlert(
+      { ...emailEnv(captured), ALERT_WEBHOOK_URL: "https://open.feishu.cn/hook" } as unknown as Env,
+      mail,
+    );
+    expect(r.sent).toBe(true);
+    expect(r.via).toBe("email");
+    expect(captured.value).not.toBeNull();
+    vi.unstubAllGlobals();
+  });
+
+  it("falls back to the Email binding when the webhook throws", async () => {
+    const captured = { value: null as unknown };
+    vi.stubGlobal("fetch", vi.fn(async () => {
+      throw new Error("network down");
+    }));
+    const r = await deliverAlert(
+      { ...emailEnv(captured), ALERT_WEBHOOK_URL: "https://open.feishu.cn/hook" } as unknown as Env,
+      mail,
+    );
+    expect(r).toEqual({ sent: true, via: "email" });
+    expect(captured.value).not.toBeNull();
+    vi.unstubAllGlobals();
+  });
+
+  it("does not let a failing SMTP stand in front of a working webhook", async () => {
+    const captured = { value: null as unknown };
+    const fetchSpy = vi.fn(async () => new Response("", { status: 200 }));
+    vi.stubGlobal("fetch", fetchSpy);
+    const r = await deliverAlert(
+      {
+        ...emailEnv(captured),
+        ALERT_WEBHOOK_URL: "https://open.feishu.cn/hook",
+        // SMTP 配置齐全但必然失败（保留地址）：以前会走 SMTP 分支并直接 return 失败。
+        SMTP_HOST: "127.0.0.1",
+        SMTP_PORT: "1",
+        SMTP_USER: "u",
+        SMTP_PASS: "p",
+        SMTP_FROM: "no-reply@example.com",
+      } as unknown as Env,
+      mail,
+    );
+    expect(r.sent).toBe(true);
+    expect(r.via).toBe("webhook");
+    vi.unstubAllGlobals();
+  });
+
+  it("reports no_alert_channel when nothing is configured", async () => {
+    const r = await deliverAlert({} as Env, mail);
+    expect(r).toEqual({ sent: false, reason: "no_alert_channel" });
+  });
+});
+
+// /run 与 /alert-test 是写接口：前者写 D1（3 探针 × 3 表），后者真的发信。
+// 这个 Worker 挂在公网（status.limooo.cn），没有这条鉴权，任何第三方页面
+// 都能用空 body 的简单 POST 打爆告警通道、烧掉 D1 每日写入额度。
+describe("ops endpoint auth", () => {
+  const TOKEN = "ops-token-0123456789abcdef";
+  const URL_BASE = "https://status.limooo.cn";
+
+  /** 全副武装的 env：告警通道可用，因此「没发信」是真的没发信。 */
+  function opsEnv(extra: Partial<Env> = {}) {
+    const send = vi.fn(async (_msg: unknown) => ({}));
+    const env = {
+      // 空探针表：/run 里的 runAll 不真的跑探针，只验证分发与鉴权。
+      DB: fakeDb({ all: () => ({ results: [] }) }).db,
+      STATUS_TOKEN: TOKEN,
+      ALERT_TO: "ops@example.com",
+      EMAIL: { send },
+      ...extra,
+    } as unknown as Env;
+    return { env, send };
+  }
+
+  function opsRequest(path: string, init: RequestInit = {}) {
+    return new Request(`${URL_BASE}${path}`, init);
+  }
+
+  function bearer(token: string) {
+    return { Authorization: `Bearer ${token}` };
+  }
+
+  it("rejects POST /run without an ops token", async () => {
+    const { env } = opsEnv();
+    const res = await worker.fetch(opsRequest("/run", { method: "POST" }), env);
+    expect(res.status).toBe(401);
+  });
+
+  it("fails closed on POST /run when the token is not configured", async () => {
+    // 忘了 secret put STATUS_TOKEN 时必须拒绝，而不是「没配就等于开放」。
+    const { env } = opsEnv({ STATUS_TOKEN: undefined });
+    const res = await worker.fetch(
+      opsRequest("/run", { method: "POST", headers: bearer(TOKEN) }),
+      env,
+    );
+    expect(res.status).toBe(401);
+  });
+
+  it("rejects POST /alert-test without an ops token and sends nothing", async () => {
+    const fetchSpy = vi.fn(async () => new Response("", { status: 200 }));
+    vi.stubGlobal("fetch", fetchSpy);
+    const { env, send } = opsEnv();
+    const res = await worker.fetch(opsRequest("/alert-test", { method: "POST" }), env);
+    expect(res.status).toBe(401);
+    expect(send).not.toHaveBeenCalled();
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("rejects a wrong or truncated token", async () => {
+    const { env, send } = opsEnv();
+    const headers = [
+      `Bearer ${TOKEN.slice(0, 8)}`, // 截断
+      `Bearer ${TOKEN}x`, // 多一个字符
+      `Bearer ${TOKEN.slice(0, -1)}z`, // 等长但内容不同
+      TOKEN, // 少了 Bearer 前缀
+      `Basic ${TOKEN}`, // 换了 scheme
+      "",
+    ];
+    for (const header of headers) {
+      const res = await worker.fetch(
+        opsRequest("/run", { method: "POST", headers: { Authorization: header } }),
+        env,
+      );
+      expect(res.status, `Authorization: ${header}`).toBe(401);
+    }
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it("accepts POST /run with the configured token", async () => {
+    const { env } = opsEnv();
+    const res = await worker.fetch(
+      opsRequest("/run", { method: "POST", headers: bearer(TOKEN) }),
+      env,
+    );
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ ran: 0 });
+  });
+
+  it("throttles repeated POST /alert-test from the same IP", async () => {
+    const { env, send } = opsEnv();
+    const call = () =>
+      worker.fetch(
+        opsRequest("/alert-test", {
+          method: "POST",
+          headers: { ...bearer(TOKEN), "CF-Connecting-IP": "203.0.113.9" },
+        }),
+        env,
+      );
+    expect((await call()).status).toBe(200);
+    // 60 s 内第二次：节流拦截，且不再发信。
+    expect((await call()).status).toBe(429);
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the public status surface open without a token", async () => {
+    const { env } = opsEnv();
+    for (const path of [
+      "/_health",
+      "/",
+      "/status.css",
+      "/status.js",
+      "/api/status",
+      "/alert-preview",
+    ]) {
+      const res = await worker.fetch(opsRequest(path), env);
+      expect(res.status, path).toBe(200);
+    }
   });
 });

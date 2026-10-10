@@ -21,8 +21,9 @@ export async function renderRedirectPage(context: RequestContext): Promise<Respo
   if (!env.ASSETS) return new Response("Redirect page unavailable", { status: 503 });
   const asset = await env.ASSETS.fetch(new URL(`/${lang}/redirect.html`, BASE_URL));
   if (!asset.ok) return new Response("Redirect page unavailable", { status: 503 });
+  // 语言由模板的 <html lang="{{ g.lang }}"> 在构建期渲染；`{{lang}}` 占位符
+  // 已不存在于任何模板或产物中（grep 零命中），这里只注入运行时的 to/preload。
   const html = (await asset.text())
-    .replaceAll("{{lang}}", lang)
     .replaceAll("{{to}}", escapeHtml(to))
     .replaceAll("{{preload}}", JSON.stringify(rels))
     .replaceAll("{{preload_links}}", preloadLinks);

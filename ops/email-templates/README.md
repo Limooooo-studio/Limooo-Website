@@ -1,57 +1,88 @@
-# Limooo 邮件模板
+# Limooo email templates
 
-存放 Limooo 对外邮件的通用框架与多语种文案。**所有服务统一走 `framework.html` + `render.py`，不要各自维护版式。**
+Transactional-mail layout and four-language copy for Limooo.
 
-## 通用框架（所有服务复用）
+**Status: deprecated (2026-10-11, docs/22 W7-13).** Nothing in the running system
+calls the Python renderer any more: the VPS Flask app that used it was retired and
+Cloudflare Access replaced the login mail flow. The only production mail that still
+goes out is the **status-worker alert**, which owns its own copy.
 
-- `framework.html`：通用 HTML 版式（logo + 标题 + 正文 + 可选高亮块 + 可选 CTA 按钮 + 可选提示 + 页脚），占位符见文件头。
-- `framework.i18n.json`：通用四语种默认文案（footer_rights / default_hint / default_button / common_title）。
-- `render.py`：渲染入口，供所有服务调用。示例：
+## Owner map (do not duplicate copy)
+
+| Mail | Owner | Notes |
+| --- | --- | --- |
+| Status / health alert | `ops/status-worker/src/index.ts` (`ALERT_I18N` + `buildAlertEmail`) | The single source. Four languages, asserted by `ops/status-worker/src/index.test.ts`. |
+| Shared HTML framework | `framework.html` + `framework.i18n.json` + `render.py` (this directory) | Deprecated, uncalled, kept working by `tests/test_email_templates.py`. |
+| Alert copy (Python) | - | `health-alert.i18n.json` is a tombstone: it carries no copy, so it cannot drift again. |
+
+If a new mail sender is ever added, either reuse this framework or delete it. Never
+add a third copy of the same copy.
+
+## Shared framework (deprecated)
+
+- `framework.html`: the HTML layout (logo, title, body, optional highlight block,
+  optional CTA button, optional hint, footer). Placeholders are documented at the
+  top of the file.
+- `framework.i18n.json`: four-language defaults (`footer_rights`, `default_hint`,
+  `default_button`, `common_title`).
+- `render.py`: the renderer entry point. It still works and is tested, but has no
+  caller in production. Example:
 
   ```python
   from render import render_email
   html, plain = render_email(
-      lang="zh-cn",            # zh-cn / en-us / ja-jp / ko-kr
-      title="您的验证码",
-      body="感谢您使用 Limooo Studio 的服务。",
-      code="654321",           # 可选：高亮块
-      cta_label="前往查看",    # 可选：主按钮
+      lang="en-us",                    # zh-cn / en-us / ja-jp / ko-kr
+      title="Your verification code",
+      body="Thanks for using Limooo Studio.",
+      code="654321",                   # optional: highlight block
+      cta_label="Open",                # optional: primary button
       cta_url="https://limooo.cn",
-      hint="如果您未发起此操作，可忽略本邮件。",
-      preheader="您的验证码是 654321",
+      hint="If you did not request this, you can ignore this mail.",
+      preheader="Your code is 654321",
   )
   ```
 
-  CLI 调试：`python3 render.py --lang en-us --title 'Hi' --body 'Hello' --code 123456`
+  CLI debug (prints a `plain` block and an `html` block, no decorative banners):
 
-## 验证码用例
+  ```sh
+  python3 render.py --lang en-us --title 'Hi' --body 'Hello' --code 123456
+  ```
 
-- `verification-code.i18n.json`：验证码主题四语种文案（subject / title / body / hint / plain / footer）。
-- `verification-code.html`：用例说明（实际版式由 framework 提供，不重复）。
+## Verification-code case (unused)
 
-## 健康检查告警
+- `verification-code.i18n.json`: four-language copy for a verification-code mail
+  (subject / title / body / hint / plain / footer).
+- `verification-code.html`: notes only; the actual layout comes from the framework.
 
-- `health-alert.i18n.json`：告警邮件四语种文案（subject / title / intro / alerts / metrics / CTA / hint）。
-- 告警渲染现在由 `ops/status-worker` 负责（零 VPS 后 `check_health.py` 已删除）；
-  仍是同一套 `render_email()` 版式，邮件主题和正文无需重复维护。
+No running service sends a verification-code mail today (Cloudflare Access handles
+login), so this case is kept for reference only.
 
-## 发送要点
+## Sending notes
 
-- **零 VPS 后的首选通道**：`status-worker` 的 `ALERT_WEBHOOK_URL`（HTTP webhook，默认飞书机器人格式）。
-- **兜底**：Workers `send_email` binding（需开通 Email Sending）；发件域 `limooo.cn`，
-  DNS 改动只落在 `cf-bounce` 子域，根域 SPF 不动。
-- 收件：收件人通过 `wrangler secret put ALERT_TO` 注入，不入库；未配置时告警只记日志、不报错。
-- 页脚 `Limooo` 用 Baloo 2（`font-size:1.21em` 补偿偏小字形）；邮件内嵌 TTF 为 `cid` 附件。
-- 顶部 logo 用 `images.limooo.cn`（保留透明通道）；`image.limooo.cn` 会丢失 alpha 导致黑底。
+- **Preferred channel after the VPS retirement**: the status-worker's
+  `ALERT_WEBHOOK_URL` (HTTP webhook, Feishu bot format by default).
+- **Fallback**: the Workers `send_email` binding (requires Email Sending). Sender
+  domain `limooo.cn`; DNS changes stay on the `cf-bounce` subdomain, the root SPF
+  record is untouched.
+- Recipients are injected with `wrangler secret put ALERT_TO` and never committed;
+  with no recipient configured an alert is only logged and does not fail.
+- The `Limooo` footer wordmark uses Baloo 2 (`font-size:1.21em` compensates the
+  small glyphs); the TTF is embedded as a `cid` attachment.
+- The header logo comes from `images.limooo.cn` (keeps the alpha channel);
+  `image.limooo.cn` drops alpha and renders a black background.
 
-## 历史记录（迁移前，已停用）
+## History (pre-migration, retired)
 
-- SMTP：`smtp.feishu.cn:465`（SSL），账号 `no-reply-<N>@limooo.cn` / `Limooo-no-reply-N`。
-- 凭据：服务器 `secrets/smtp-relay.env`；relay `/opt/smtp-relay/relay.py` 从该 env 读取。
-- 随 VPS 退租一并失效；服务器端 relay 已不存在。
+- SMTP: `smtp.feishu.cn:465` (SSL), accounts `no-reply-<N>@limooo.cn` /
+  `Limooo-no-reply-N`.
+- Credentials lived in the server's `secrets/smtp-relay.env`; the relay at
+  `/opt/smtp-relay/relay.py` read that file.
+- Both went away with the VPS lease; the relay no longer exists.
 
-## 已知问题
+## Known issues
 
-- 飞书发信出口 IP（`71.18.227.x` / `163.181.x`）在 Spamhaus 黑名单，部分邮箱（如 iCloud）会以
-  `554 5.7.1 [HM08] local policy` 硬拒。SPF/DKIM 虽 pass，但发送 IP 信誉差仍会被拒。
-  临时缓解：收件人侧添加联系人/白名单。治本需飞书申诉移除 IP，或改用 IP 干净的服务商。
+- Feishu's sending egress IPs (`71.18.227.x` / `163.181.x`) are on Spamhaus
+  blocklists, so some providers (iCloud, for example) hard-reject them with
+  `554 5.7.1 [HM08] local policy` even though SPF/DKIM pass.
+  Workaround for recipients: add the sender to contacts / allowlist. A real fix
+  needs Feishu to delist the IPs, or a provider with cleaner egress.

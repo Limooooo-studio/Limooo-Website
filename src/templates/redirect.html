@@ -2,13 +2,13 @@
    由 build.py 按 4 种语言预渲染为 public/<lang>/redirect.html。
    to / preload / preload_links 由 Pages 中间件在运行时注入。 #}
 <!DOCTYPE html>
-<html lang="zh-cn">
+<html lang="{{ g.lang }}">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="dark light">
-<link rel="icon" href="/static/icons/Limooo.svg" type="image/svg+xml">
-<link rel="apple-touch-icon" href="/static/icons/Limooo.svg">
+<link rel="icon" href="/static/icons/Limooo.svg?v=2" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/static/icons/Limooo.svg?v=2">
 <link rel="stylesheet" href="/static/fonts-round75.css?v=2">
 <script src="/static/js/theme-preload.js?v=2"></script>
 <title>{{ _('redirect_title') }}</title>
