@@ -1,4 +1,22 @@
 #!/usr/bin/env python3
+
+# Limooo - serverless personal website and admin system
+#
+# Copyright (C) 2026 Limooo <https://limooo.cn/>
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU Affero General Public License as published
+# by the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU Affero General Public License for more details.
+#
+# You should have received a copy of the GNU Affero General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
 """部署前校验 config-contract.json、src/config.py 与生成的 functions/_lib/config.ts。
 
 纯标准库实现，不引入新依赖。只要任意一侧与契约不一致，就以非 0 退出，
@@ -11,7 +29,6 @@ import importlib.util
 import json
 import sys
 from pathlib import Path
-
 
 ROOT = Path(__file__).resolve().parents[1]
 CONTRACT_PATH = ROOT / "config-contract.json"

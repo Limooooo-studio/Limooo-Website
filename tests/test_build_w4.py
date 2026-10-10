@@ -1,3 +1,20 @@
+# Limooo - serverless personal website and admin system
+#
+# Copyright (C) 2026 Limooo <https://limooo.cn/>
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU Affero General Public License as published
+# by the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU Affero General Public License for more details.
+#
+# You should have received a copy of the GNU Affero General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
 """docs/22 W4：构建期轻量化、产物瘦身与 A2（作品集原图不外发）的回归测试。
 
 覆盖：
@@ -13,12 +30,12 @@ from __future__ import annotations
 import json
 import re
 
+import pytest
+
 import build
 import portfolio
-import pytest
 import render_app
 import services_pricing
-
 
 # ── W4-1 构建期只算一次不变量 ────────────────────────────────────────
 

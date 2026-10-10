@@ -1,4 +1,22 @@
 #!/usr/bin/env python3
+
+# Limooo - serverless personal website and admin system
+#
+# Copyright (C) 2026 Limooo <https://limooo.cn/>
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU Affero General Public License as published
+# by the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU Affero General Public License for more details.
+#
+# You should have received a copy of the GNU Affero General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
 """Limooo → Cloudflare Pages 静态化构建脚本
 
 把 Jinja 模板按 4 种语言预渲染成 public/ 下的静态 HTML，并生成：
@@ -10,9 +28,9 @@
 输出目录：public/（git 只保留 .gitkeep，部署用 wrangler pages deploy 直传）
 """
 
-import json
 import hashlib
 import io
+import json
 import os
 import re
 import shutil
@@ -21,18 +39,27 @@ import sys
 
 from flask import Flask, g, render_template
 
+# 这两个是**可选依赖**：缺了要降级成 None（该不该报错由
+# check_image_prerequisites 在动 public/ 之前判定，它负责 raise）。
+# `x = None` 与 import 推出的 Module 冲突，这里是全仓库唯一需要放行的地方，
+# 精确到 assignment 一条——不写裸 ignore，也不全局关掉检查。
 try:
     from PIL import Image, ImageDraw
 except ImportError:
-    Image = ImageDraw = None
+    Image = ImageDraw = None  # type: ignore[assignment]
 
 try:
+    # 本仓库不带 cairosvg stub，类型由 typings/cairosvg/__init__.pyi 提供。
+    # 这里只对「这个包没有 py.typed」这一条放行（不是 ignore_missing_imports
+    # 全局关掉第三方检查）；它的 svg2png 调用点仍有真类型。
+    # cairosvg 自己不带 py.typed，类型由仓库里的 typings/cairosvg/__init__.pyi
+    # 提供（mypy 直接认这份 stub，所以这里不需要 ignore）。
     import cairosvg
 except (ImportError, OSError):
     # cairosvg 依赖本地 libcairo；缺失时 cairocffi 抛的是 OSError 而非
     # ImportError（Linux/无 Homebrew 环境常见），这里一并降级为"不可用"，
     # 由 generate_watermarks 判断是否真的需要水印。
-    cairosvg = None
+    cairosvg = None  # type: ignore[assignment]
 
 
 from config import (
@@ -50,12 +77,41 @@ from config import (
     ROOT_DOMAIN,
     SERVICES_HOST,
     STATIC_DIR,
-    SUPPORTED_LANGS as LANGS,
     VISITOR_HOST,
     load_translations,
 )
+from config import (
+    SUPPORTED_LANGS as LANGS,
+)
 
 FUNCTIONS_DIR = os.path.join(BASE_DIR, "functions")
+
+# 生成物（functions/_lib/config.ts、functions/_data/*.ts、functions/api/i18n/[lang].ts）
+# 顶部的 AGPL 头必须由生成器产出，否则下次 build 会被抹掉（docs/22 W8-7）。
+# 措辞与 src/config.py 等手写文件里的头逐字一致，只把注释符号换成 TS 的块注释。
+# ops/check_gate_trust.py 生成 functions/_data/gateTrust.ts 时有一份同文副本，
+# 改这里请一并改那边。
+LICENSE_HEADER_TS = """\
+/**
+ * Limooo - serverless personal website and admin system
+ *
+ * Copyright (C) 2026 Limooo <https://limooo.cn/>
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published
+ * by the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
+"""
+
 
 def preview_localization_patterns() -> dict[str, re.Pattern[str]]:
     """预览产物本地化用的正则：域名一律由契约常量现算。
@@ -374,48 +430,46 @@ def write_config_functions() -> None:
         contract = json.load(f)
 
     lines = [
+        LICENSE_HEADER_TS.rstrip("\n"),
+        "",
         "/** 由 build.py 自动生成，勿手改；修改配置请编辑 config-contract.json。 */",
         "export const CONTRACT = " + json.dumps(contract, ensure_ascii=False, indent=2) + " as const;",
         "",
         "export const ROOT_DOMAIN = CONTRACT.root_domain;",
         "export const BASE_URL = `https://${ROOT_DOMAIN}`;",
         "export const WWW_HOSTNAME = `www.${ROOT_DOMAIN}`;",
-        "export const SERVICES_HOSTNAME = `services.${ROOT_DOMAIN}`;",
-        "export const CONTACT_HOSTNAME = `contact.${ROOT_DOMAIN}`;",
+        # 只发射 functions/ 真正引用的常量。以下 15 个「CONTRACT 字段别名」经全量
+        # 扫描确认零引用（既无生产代码也无测试 import），已停止发射：它们只是把
+        # CONTRACT 的字段换个名字再导出一遍，留在这里就是生成的死代码。要用某个
+        # 值时直接从 CONTRACT 取字段，不要再加别名。
+        #   已删：SERVICES_HOSTNAME / CONTACT_HOSTNAME / GATE_HOST / REDIRECT_HOST /
+        #   IMAGE_BASE / MANAGED_HOSTS / SHARED_LANG_HOSTS / IMAGE_ASSET_BASE /
+        #   IMAGE_WATERMARK_BASE / OBSERVABILITY_HMAC_ENV / WHITELIST_FILE /
+        #   KEY_FALLBACK_LANG / THEME_COOKIE / THEME_COOKIE_MAX_AGE /
+        #   PENDING_TTL_SECONDS
+        # 注：functions/_lib/cidr.ts 的 canonicalCidr 不在此列——它被
+        # cidr.test.ts 引用，不是零引用，保留。
         "export const VISITOR_HOSTNAME = `visitor.${ROOT_DOMAIN}`;",
         "export const APPLE_ACCOUNT_HOSTNAME = `account.${ROOT_DOMAIN}`;",
         "export const REDIRECT_HOSTNAME = `redirect.${ROOT_DOMAIN}`;",
         "export const GATE_HOSTNAME = `auth.${ROOT_DOMAIN}`;",
         "export const IMAGES_HOSTNAME = `images.${ROOT_DOMAIN}`;",
-        "export const GATE_HOST = GATE_HOSTNAME;",
-        "export const REDIRECT_HOST = `https://${REDIRECT_HOSTNAME}/`;",
-        "export const IMAGE_BASE = `https://${IMAGES_HOSTNAME}`;",
         "export const APPLE_ACCOUNT_DOMAIN = `@${APPLE_ACCOUNT_HOSTNAME}`;",
         "export const PUBLIC_HOSTS: Set<string> = new Set(CONTRACT.public_hosts);",
-        "export const MANAGED_HOSTS: Set<string> = new Set(CONTRACT.managed_hosts);",
-        "export const SHARED_LANG_HOSTS: Set<string> = new Set(CONTRACT.shared_lang_hosts);",
         "export const PAGE_ROUTES: Record<string, Record<string, string>> = CONTRACT.page_routes;",
         "export const IMAGE_ASSET_HOSTNAME = CONTRACT.image_asset_host;",
         "export const IMAGE_WATERMARK_HOSTNAME = CONTRACT.image_watermark_host;",
-        "export const IMAGE_ASSET_BASE = `https://${IMAGE_ASSET_HOSTNAME}`;",
-        "export const IMAGE_WATERMARK_BASE = `https://${IMAGE_WATERMARK_HOSTNAME}`;",
         "export const GATE_TRUST = CONTRACT.gate_trust;",
-        "export const OBSERVABILITY_HMAC_ENV = CONTRACT.observability_hmac_env;",
-        "export const WHITELIST_FILE = CONTRACT.whitelist_file;",
         "export const SUPPORTED_LANGS = CONTRACT.supported_langs;",
         "export const DEFAULT_LANG = CONTRACT.default_lang;",
-        "export const KEY_FALLBACK_LANG = CONTRACT.key_fallback_lang;",
         "export const LANG_COOKIE = CONTRACT.lang_cookie;",
         "export const LANG_COOKIE_MAX_AGE = CONTRACT.lang_cookie_max_age;",
-        "export const THEME_COOKIE = CONTRACT.theme_cookie;",
-        "export const THEME_COOKIE_MAX_AGE = CONTRACT.theme_cookie_max_age;",
         "export const GATE_COOKIE = CONTRACT.gate_cookie;",
         "export const SESSION_COOKIE = CONTRACT.session_cookie;",
         "export const PENDING_COOKIE = CONTRACT.pending_cookie;",
         "export const CSRF_COOKIE = CONTRACT.csrf_cookie;",
         "export const GATE_TTL_SECONDS = CONTRACT.gate_ttl_seconds;",
         "export const SESSION_TTL_SECONDS = CONTRACT.session_ttl_seconds;",
-        "export const PENDING_TTL_SECONDS = CONTRACT.pending_ttl_seconds;",
         "export const REVEAL_MAX_AUTH_AGE_SECONDS = CONTRACT.reveal_max_auth_age_seconds;",
         "",
     ]
@@ -434,7 +488,8 @@ def write_i18n_functions() -> None:
     os.makedirs(os.path.dirname(ts_path), exist_ok=True)
     with open(ts_path, "w", encoding="utf-8") as f:
         f.write(
-            "// 由 build.py 自动生成，勿手改。\n"
+            LICENSE_HEADER_TS
+            + "\n// 由 build.py 自动生成，勿手改。\n"
             "export const translations: Record<string, Record<string, string>> = "
             + json.dumps(data, ensure_ascii=False, indent=2)
             + ";\n"
@@ -444,7 +499,8 @@ def write_i18n_functions() -> None:
     os.makedirs(route_dir, exist_ok=True)
     with open(os.path.join(route_dir, "[lang].ts"), "w", encoding="utf-8") as f:
         f.write(
-            '// 由 build.py 自动生成，勿手改。\n'
+            LICENSE_HEADER_TS
+            + '\n// 由 build.py 自动生成，勿手改。\n'
             'import { translations } from "../../_data/i18n";\n'
             "\n"
             "export const onRequestGet = ({ params }: { params: Record<string, string> }) => {\n"
@@ -474,6 +530,8 @@ def write_runtime_functions() -> None:
     # 会静默显示简体中文而构建全绿）。
     redirect_i18n = {lang: _require_locale_keys(lang, REDIRECT_I18N_KEYS) for lang in LANGS}
     output = [
+        LICENSE_HEADER_TS.rstrip("\n"),
+        "",
         "// 由 build.py 自动生成，勿手改。",
         "export const GATE_I18N: Record<string, Record<string, string>> = "
         + json.dumps(GATE_I18N, ensure_ascii=False, indent=2)
@@ -576,7 +634,7 @@ def generate_portfolio_thumbs(source_dir=None, output_dir=None) -> int:
         return 0
 
     os.makedirs(output_dir, exist_ok=True)
-    resampling = getattr(getattr(Image, "Resampling", Image), "LANCZOS")
+    resampling = getattr(Image, "Resampling", Image).LANCZOS
     count = 0
 
     for name in sorted(os.listdir(source_dir)):
@@ -713,7 +771,7 @@ def generate_watermarks(source_root=None, out_root=None) -> int:
             target_w = max(WATERMARK_MIN_W, round(base * WATERMARK_SCALE))
             wm_h = max(1, round(wm_h0 * target_w / wm_w0))
             margin = max(12, round(base * 0.02))
-            resampling = getattr(getattr(Image, "Resampling", Image), "LANCZOS")
+            resampling = getattr(Image, "Resampling", Image).LANCZOS
             wm_resized = wm.resize((target_w, wm_h), resampling)
             # 提高水印本身的不透明度（原文件约 40% → ~72%）
             if WATERMARK_ALPHA_BOOST != 1:
@@ -967,6 +1025,10 @@ def main() -> int:
     PREVIEW_LANG = "zh-cn"
     preview_patterns = preview_localization_patterns()
     preview_pages = preview_subdomain_pages()
+    # 语言切换补丁对每个预览页都是同一段字符串：算一次复用即可。原先它在页面
+    # 循环里逐页调用，每个页面都要重读一遍 4 份 locale JSON 再 json.dumps 整个
+    # 字典（8 页 = 8 次），产物完全相同、纯属重复劳动。
+    preview_i18n_html = preview_i18n_patch()
     src = os.path.join(PUBLIC_DIR, PREVIEW_LANG)
     for name in os.listdir(src):
         if name.endswith(".html"):
@@ -1008,7 +1070,8 @@ def main() -> int:
                     "function go() {}",
                 )
             # 语言切换本地化：内联 4 语言字典（页面内可切换语言，无需 /api/i18n）
-            html = html.replace("</body>", preview_i18n_patch() + "</body>")
+            # 同一段补丁已在循环外算好（preview_i18n_html），这里只做替换。
+            html = html.replace("</body>", preview_i18n_html + "</body>")
             with open(os.path.join(PREVIEW_OUT, name), "w", encoding="utf-8") as f:
                 f.write(html)
     # 预览索引（列出所有子域页面，模板在 site/src/templates/preview.html）

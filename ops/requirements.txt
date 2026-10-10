@@ -23,3 +23,12 @@ cryptography==50.0.0
 requests==2.34.2
 pillow==12.3.0
 cairosvg==2.8.2
+
+# 检查工具（ruff / mypy）。它们不是运行时依赖，但 CI 与本地闸门要在同一个
+# 解释器里找到它们（mypy 还得能解析 src/ import 的 Flask / PIL，才能给出真
+# 判断），所以跟运行依赖装在一起。装不上也不影响成败：ops/ci_check.sh 是
+# 探测式的——缺了就打印 [ci] SKIP 而不是失败。
+# 故意**不写** requirements.lock：那份是「运行时锁定清单」，由本文件在干净
+# 环境里生成，而这两个包只是闸门工具（同 pytest-cov 的处理）。
+ruff==0.17.0
+mypy==2.4.0

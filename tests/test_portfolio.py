@@ -1,12 +1,29 @@
+# Limooo - serverless personal website and admin system
+#
+# Copyright (C) 2026 Limooo <https://limooo.cn/>
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU Affero General Public License as published
+# by the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU Affero General Public License for more details.
+#
+# You should have received a copy of the GNU Affero General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
 """作品区动态排版：卡片数量必须跟随 src/static/portfolio 里的图片数量。"""
 
 import re
 
+import pytest
 from PIL import features
 
 import build
 import portfolio
-import pytest
 from render_app import RENDER_APP
 
 

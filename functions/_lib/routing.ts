@@ -1,3 +1,22 @@
+/**
+ * Limooo - serverless personal website and admin system
+ *
+ * Copyright (C) 2026 Limooo <https://limooo.cn/>
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published
+ * by the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
+
 /** 请求路由 / 语言 / 站内跳转工具（无浏览器 DOM 依赖，可被 vitest 直接 import）。 */
 
 import type { Env } from "./env";
@@ -19,6 +38,68 @@ export interface RequestContext {
   env: Env;
   next(): Promise<Response>;
   waitUntil?(promise: Promise<unknown>): void;
+}
+
+/**
+ * 每请求只解析一次的 URL。
+ *
+ * 同一条请求链路上 `new URL(request.url)` 会被调用 7 次以上（中间件编排、门禁页、
+ * 跳转页、埋点、日志各一次），每次都重跑一遍 URL 解析器并分配一个 URL 对象。
+ * 这里按 Request 对象记忆化（WeakMap，不持有强引用），全链路只解析一次；
+ * 传 Request 对象而不是 URL 字符串，多主机/多环境也不会串味。
+ *
+ * 调用方一律**只读**：URL 是可变的（`url.searchParams` 是活引用，改它会改到本体），
+ * 需要改写时必须自己克隆（如 `_middleware.ts` 的 pageCacheKey）。
+ */
+const requestUrlCache = new WeakMap<Request, URL>();
+
+export function requestUrl(request: Request): URL {
+  let url = requestUrlCache.get(request);
+  if (!url) {
+    url = new URL(request.url);
+    requestUrlCache.set(request, url);
+  }
+  return url;
+}
+
+/**
+ * 门禁页/跳转页的**模板文本**缓存（缓存的是模板，不是最终 HTML）。
+ *
+ * `renderGatePage` 与 `renderRedirectPage` 每渲染一次都要 `env.ASSETS.fetch()`
+ * 取回 `/<lang>/auth.html`、`/<lang>/redirect.html` 的全文，而模板在 isolate
+ * 生命周期内是不变的：Pages 的部署产物不可变，新构建会换一批 isolate——与
+ * `_middleware.cachedPageAsset` 同一假设（只做进程内复用，不做跨版本持久化）。
+ * 这里只缓存模板文本，占位符注入仍然逐请求执行。
+ *
+ * 键的外层是 **ASSETS 绑定对象本身**（WeakMap）：不同 isolate、以及测试里各自
+ * 注入的 ASSETS 桩各存一份，绝不互相串味；内层键是资产路径，已含语言段
+ * （`/<lang>/<file>`），所以不同语言的同名模板不会互相覆盖。请求主机不进键：
+ * 取回用的是 BASE_URL 上的绝对路径，主机本来就不影响结果。
+ *
+ * 取回失败（无绑定 / 非 2xx）返回 null 且**不写缓存**，下次请求重试。
+ */
+const templateTextCache = new WeakMap<object, Map<string, string>>();
+
+export async function templateText(
+  env: Env,
+  lang: string,
+  file: string,
+): Promise<string | null> {
+  const assets = env.ASSETS;
+  if (!assets) return null;
+  const path = `/${lang}/${file}`;
+  let perAssets = templateTextCache.get(assets);
+  const hit = perAssets?.get(path);
+  if (hit !== undefined) return hit;
+  const asset = await assets.fetch(new URL(path, BASE_URL));
+  if (!asset.ok) return null;
+  const text = await asset.text();
+  if (!perAssets) {
+    perAssets = new Map<string, string>();
+    templateTextCache.set(assets, perAssets);
+  }
+  perAssets.set(path, text);
+  return text;
 }
 
 /** 不能被门禁拦截的路径（否则死循环）。 */
@@ -181,7 +262,7 @@ function regionSubtag(lang: string): string {
  * 于是改契约对边缘行为零影响。
  */
 export function detectLang(request: Request): SupportedLang {
-  const host = (request.headers.get("Host") ?? new URL(request.url).hostname).split(":")[0];
+  const host = (request.headers.get("Host") ?? requestUrl(request).hostname).split(":")[0];
   // 语言 cookie 以 Domain=.limooo.cn 下发，全站共享：主域与所有子域（含
   // visitor / account / status / images 等）都读同一份，切语言后跨子域一致。
   if (host === ROOT_DOMAIN || host.endsWith(`.${ROOT_DOMAIN}`)) {
@@ -229,12 +310,20 @@ export function preserveSetCookie(headers: Headers, source: Headers): void {
   for (const cookie of cookies) headers.append("Set-Cookie", cookie);
 }
 
-/** 首次访问时把检测出的语言写回；不能原地修改不可变响应头。 */
-export function withLangCookie(request: Request, resp: Response): Response {
+/**
+ * 首次访问时把检测出的语言写回；不能原地修改不可变响应头。
+ *
+ * `lang` 可选：调用方**已经算过**语言（例如中间件为了取页面资产先算了一次）时
+ * 直接传进来，避免对同一个请求把 detectLang 跑两遍；不传则保持旧行为自行检测。
+ */
+export function withLangCookie(request: Request, resp: Response, lang?: string): Response {
   if (getCookie(LANG_COOKIE, request.headers.get("Cookie"))) return resp;
   const headers = new Headers(resp.headers);
   preserveSetCookie(headers, resp.headers);
-  headers.append("Set-Cookie", langCookieHeader(request.headers.get("Host") ?? "", detectLang(request)));
+  headers.append(
+    "Set-Cookie",
+    langCookieHeader(request.headers.get("Host") ?? "", lang ?? detectLang(request)),
+  );
   return new Response(resp.body, {
     status: resp.status,
     statusText: resp.statusText,

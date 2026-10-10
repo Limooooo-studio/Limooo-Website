@@ -1,5 +1,23 @@
 #!/usr/bin/env python3
 
+# Limooo - serverless personal website and admin system
+#
+# Copyright (C) 2026 Limooo <https://limooo.cn/>
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU Affero General Public License as published
+# by the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU Affero General Public License for more details.
+#
+# You should have received a copy of the GNU Affero General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+
 """Limooo D1 保留期与每日聚合脚本（docs/11）。
 
 默认只做 dry-run，不删除任何数据；只有显式传入 --apply 才执行聚合与清理。
@@ -35,9 +53,9 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "ops"))
 sys.path.insert(0, str(ROOT / "src"))
 
-from config import ENV_FILE  # noqa: E402
-
 from d1_client import cloudflare_config, d1_query, load_env  # noqa: E402
+
+from config import ENV_FILE  # noqa: E402
 
 DAY_SECONDS = 86400
 RETENTION_TS = ROOT / "ops" / "status-worker" / "src" / "retention.ts"

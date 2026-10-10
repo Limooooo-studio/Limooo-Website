@@ -29,7 +29,11 @@
 #
 # Step set (identical to .github/workflows/tests.yml -- keep both in sync):
 #   typescript: build / typecheck / migrate --dry-run / npm test / coverage (report only)
-#   python:     pytest / security headers / readme_facts.py --check
+#   python:     ruff / mypy / pytest / security headers / readme_facts.py --check
+#
+# ruff and mypy are probed, not required (same treatment as pytest-cov):
+# installed -> run and fail the gate; missing -> one [ci] SKIP line, no failure.
+# Why probe: they live in ops/requirements.txt but the build venv may predate them.
 #
 # Usage:
 #   bash ops/ci_check.sh                # check the current working tree
@@ -58,7 +62,7 @@ while [ $# -gt 0 ]; do
         --typescript) RUN_PY=0 ;;
         --python) RUN_TS=0 ;;
         --no-build) DO_BUILD=0 ;;
-        --help|-h) sed -n '20,43p' "$0"; exit 0 ;;
+        --help|-h) sed -n '20,45p' "$0"; exit 0 ;;
         *)
             echo "FATAL: unknown argument $1" >&2
             echo "       supported: --ref=<rev> / --typescript / --python / --no-build" >&2
@@ -226,6 +230,24 @@ fi
 
 if [ "$RUN_PY" = 1 ]; then
     echo "[ci] python job"
+
+    # ruff / mypy 与 pytest-cov 同一套探测式处理：装了就跑、没装只打印一行 SKIP。
+    # 它们不是运行时依赖（在 ops/requirements.txt 里，不在 requirements.lock），
+    # 老 venv 里没有是正常状态，不该因此把闸门判红。
+    if (cd "$TARGET" && "$PYTHON_BIN" -m ruff --version >/dev/null 2>&1); then
+        echo "[ci] python -m ruff check src ops tests"
+        (cd "$TARGET" && "$PYTHON_BIN" -m ruff check src ops tests)
+    else
+        echo "[ci] SKIP ruff: not installed (pip install -r ops/requirements.txt)"
+    fi
+
+    if (cd "$TARGET" && "$PYTHON_BIN" -m mypy --version >/dev/null 2>&1); then
+        echo "[ci] python -m mypy src"
+        (cd "$TARGET" && "$PYTHON_BIN" -m mypy src)
+    else
+        echo "[ci] SKIP mypy: not installed (pip install -r ops/requirements.txt)"
+    fi
+
     echo "[ci] python -m pytest"
     # 覆盖率只报告、不设阈值（W6-3）。pytest-cov 不在 requirements.lock 里，
     # 所以先探测再决定加不加 --cov；缺了只跳过且不影响退出码。

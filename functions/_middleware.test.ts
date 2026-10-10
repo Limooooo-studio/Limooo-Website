@@ -1,17 +1,45 @@
-/** 强制主题挑战门禁编排测试：必须无视白名单 IP / cf_clearance，并保持原 URL。 */
+/**
+ * Limooo - serverless personal website and admin system
+ *
+ * Copyright (C) 2026 Limooo <https://limooo.cn/>
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published
+ * by the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
 
-import { describe, expect, it, vi } from "vitest";
-import { handleOnRequest, pageCacheKey } from "./_middleware";
-import { mintGateCookie } from "./_lib/gate";
+/**
+ * 强制主题挑战门禁编排测试：必须无视白名单 IP / cf_clearance，并保持原 URL。
+ *
+ * 另有 `onRequest wrapper` 一节锁住真正被 Pages 调用的入口（安全响应头分发、
+ * 多条 Set-Cookie 的保全、403 不埋点）——`handleOnRequest` 之外的最后一层。
+ */
+
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { handleOnRequest, onRequest, pageCacheKey } from "./_middleware";
+import { GATE_TURNSTILE_ACTION, mintGateCookie } from "./_lib/gate";
+import { SECURITY_HEADERS } from "./_lib/security";
+import { recordRay, recordVisit, shouldTrackRay, shouldTrackVisit } from "./_lib/tracking";
 import type { Env } from "./_lib/env";
 import type { RequestContext } from "./_lib/routing";
 
+// 埋点全部换成 spy：既有用例依赖「默认不埋点」，onRequest 的用例再用
+// mockReturnValue 打开开关，直接断言 recordVisit / recordRay 有没有被调用。
 vi.mock("./_lib/tracking", () => ({
-  isTrustedCrawler: () => false,
-  recordRay: () => Promise.resolve(),
-  recordVisit: () => Promise.resolve(),
-  shouldTrackRay: () => false,
-  shouldTrackVisit: () => false,
+  isTrustedCrawler: vi.fn(() => false),
+  recordRay: vi.fn(async () => undefined),
+  recordVisit: vi.fn(async () => undefined),
+  shouldTrackRay: vi.fn(() => false),
+  shouldTrackVisit: vi.fn(() => false),
 }));
 
 const keys = {
@@ -731,5 +759,287 @@ describe("canonical /gate entry", () => {
       ),
     );
     expect(diag.status).toBe(200);
+  });
+});
+
+describe("onRequest wrapper", () => {
+  /**
+   * onRequest 的埋点走 context.waitUntil：用一个收集数组把延后的 promise 拿回来，
+   * 既能等它们跑完，也能断言它们确实交给了 waitUntil（而不是被 fire-and-forget）。
+   */
+  function wrapperContext(
+    request: Request,
+    env: Partial<Env> = {},
+    next: () => Promise<Response> = async () => new Response("next", { status: 200 }),
+  ) {
+    const deferred: Promise<unknown>[] = [];
+    const context: RequestContext = {
+      request,
+      env: { ...keys, ...env } as Env,
+      next,
+      waitUntil: (promise: Promise<unknown>) => {
+        deferred.push(promise);
+      },
+    };
+    return { context, deferred };
+  }
+
+  const htmlEnv = (body = "<html><body>{{host}} {{next}}</body></html>") => ({
+    ASSETS: {
+      fetch: async () =>
+        new Response(body, { headers: { "Content-Type": "text/html; charset=utf-8" } }),
+    },
+  });
+
+  /**
+   * 造一个「workerd 语义」的响应：迭代（`new Headers(resp.headers)` 走的路径）
+   * 只看到逗号合并后的一条 `set-cookie`，而 `getSetCookie()` 仍给出两条。
+   *
+   * Node/undici 的复制构造函数会原样保留多条 Set-Cookie，所以不模拟这一层，
+   * 把 `preserveSetCookie` 删掉也不会红——而线上跑的是 workerd。
+   */
+  function foldingCookieResponse(cookies: string[], status = 200): Response {
+    const real = new Headers({ "Content-Type": "application/json" });
+    for (const cookie of cookies) real.append("Set-Cookie", cookie);
+    const resp = new Response("{}", { status, headers: real });
+    Object.defineProperty(resp, "headers", {
+      value: {
+        getSetCookie: () => real.getSetCookie(),
+        *[Symbol.iterator]() {
+          yield ["content-type", "application/json"] as [string, string];
+          yield ["set-cookie", real.getSetCookie().join(", ")] as [string, string];
+        },
+      },
+    });
+    return resp;
+  }
+
+  beforeEach(() => {
+    vi.mocked(shouldTrackVisit).mockReturnValue(true);
+    vi.mocked(shouldTrackRay).mockReturnValue(true);
+    vi.mocked(recordVisit).mockClear();
+    vi.mocked(recordRay).mockClear();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.mocked(shouldTrackVisit).mockReturnValue(false);
+    vi.mocked(shouldTrackRay).mockReturnValue(false);
+  });
+
+  it("adds the full security header set to pages and only nosniff to /api/*", async () => {
+    const { context: pageContext } = wrapperContext(
+      new Request("https://limooo.cn/services", {
+        headers: { "CF-Connecting-IP": "97.64.18.11" },
+      }),
+      htmlEnv("<html>services</html>"),
+    );
+    const page = await onRequest(pageContext);
+
+    expect(page.status).toBe(200);
+    // 页面：SECURITY_HEADERS 逐条相等，值从唯一来源导入，不抄字符串。
+    for (const [name, value] of Object.entries(SECURITY_HEADERS)) {
+      expect(page.headers.get(name), `${name} on a page`).toBe(value);
+    }
+    expect(page.headers.get("Content-Security-Policy")).toBe(
+      SECURITY_HEADERS["Content-Security-Policy"],
+    );
+
+    const { context: apiContext } = wrapperContext(
+      new Request("https://limooo.cn/api/visitors", {
+        headers: { "CF-Connecting-IP": "97.64.18.11" },
+      }),
+    );
+    const api = await onRequest(apiContext);
+
+    expect(api.status).toBe(200);
+    // /api/*：唯一例外是 nosniff，其余四个（含 CSP）不得出现，否则会破坏 JSON 接口。
+    expect(api.headers.get("X-Content-Type-Options")).toBe(
+      SECURITY_HEADERS["X-Content-Type-Options"],
+    );
+    expect(api.headers.get("Content-Security-Policy")).toBeNull();
+    for (const name of Object.keys(SECURITY_HEADERS)) {
+      if (name === "X-Content-Type-Options") continue;
+      expect(api.headers.get(name), `${name} must not be added to /api/*`).toBeNull();
+    }
+  });
+
+  it("keeps both Set-Cookie headers that /gate/verify issues", async () => {
+    // /gate/verify 刻意下发两枚 Set-Cookie：先清 host-only 旧作用域，再写域级新
+    // cookie（只写一条解不开旧 cookie 的遮挡）；多条被折叠时 Safari 只认第一条。
+    vi.stubGlobal("fetch", async () =>
+      Response.json({ success: true, hostname: "limooo.cn", action: GATE_TURNSTILE_ACTION }),
+    );
+
+    const { context } = wrapperContext(
+      new Request("https://limooo.cn/gate/verify", {
+        method: "POST",
+        headers: {
+          "CF-Connecting-IP": "203.0.113.7",
+          Accept: "application/json",
+          "Content-Type": "application/x-www-form-urlencoded",
+        },
+        body: new URLSearchParams({
+          "cf-turnstile-response": "token",
+          next: "/",
+          host: "limooo.cn",
+        }).toString(),
+      }),
+    );
+    const resp = await onRequest(context);
+
+    expect(resp.status).toBe(204);
+    const cookies = resp.headers.getSetCookie();
+    expect(cookies).toHaveLength(2);
+    expect(cookies.every((cookie) => cookie.startsWith("__gate="))).toBe(true);
+    // 两条内容不同：一条 Max-Age=0 的清旧作用域，一条带签名的新 cookie。
+    expect(new Set(cookies).size).toBe(2);
+  });
+
+  it("does not fold multiple Set-Cookie headers when rewrapping the response", async () => {
+    // 走 next() 的多 cookie 响应（如 API 同时下发会话与 CSRF）真实穿过 onRequest；
+    // 响应头按 workerd 的语义构造，见 foldingCookieResponse。
+    const cookies = [
+      "limooo_session=abc; Path=/; HttpOnly",
+      "limooo_csrf=def; Path=/; SameSite=Lax",
+    ];
+    const { context } = wrapperContext(
+      new Request("https://limooo.cn/api/auth/status", {
+        headers: { "CF-Connecting-IP": "97.64.18.11" },
+      }),
+      {},
+      async () => foldingCookieResponse(cookies),
+    );
+
+    const resp = await onRequest(context);
+
+    expect(resp.status).toBe(200);
+    expect(resp.headers.getSetCookie()).toEqual(cookies);
+  });
+
+  it("skips visit and ray tracking for 403 gate rejections", async () => {
+    const { context, deferred } = wrapperContext(
+      new Request("https://limooo.cn/services", {
+        headers: { "CF-Connecting-IP": "203.0.113.7" },
+      }),
+      htmlEnv(),
+    );
+    const resp = await onRequest(context);
+    await Promise.all(deferred);
+
+    expect(resp.status).toBe(403);
+    // 门禁拒绝（与已封来源同样是 403）不落访问/Ray 日志，扫描流量不能反烧 D1 配额。
+    // 埋点开关在 beforeEach 里已置 true，所以这两个 not.toHaveBeenCalled 不是空转。
+    expect(vi.mocked(recordVisit)).not.toHaveBeenCalled();
+    expect(vi.mocked(recordRay)).not.toHaveBeenCalled();
+  });
+
+  it("records the visit and ray on tracked responses, handing both to waitUntil", async () => {
+    const { context, deferred } = wrapperContext(
+      new Request("https://limooo.cn/services", {
+        headers: { "CF-Connecting-IP": "97.64.18.11" },
+      }),
+      htmlEnv("<html>services</html>"),
+    );
+    const resp = await onRequest(context);
+    await Promise.all(deferred);
+
+    expect(resp.status).toBe(200);
+    expect(vi.mocked(recordVisit)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(recordRay)).toHaveBeenCalledTimes(1);
+
+    // 状态码按实际响应传下去，不写死。
+    expect(vi.mocked(recordVisit).mock.calls[0][2]).toBe(200);
+    const rayCall = vi.mocked(recordRay).mock.calls[0];
+    expect(rayCall[2]).toBe(200);
+    expect(typeof rayCall[3]).toBe("number");
+
+    // 埋点 promise 必须交给 waitUntil：既不阻塞响应，也不是 fire-and-forget。
+    expect(deferred).toContain(vi.mocked(recordVisit).mock.results[0].value);
+    expect(deferred).toContain(vi.mocked(recordRay).mock.results[0].value);
+  });
+});
+
+/**
+ * docs/22 增量 ②：一条请求链路上 `new URL(request.url)` 只解析一次、
+ * `detectLang` 只算一次。
+ *
+ * 计数用代理/取值器直接盯着 `request.url` 与 `Accept-Language` 的读取次数：
+ * 前者就是 URL 解析次数，后者在无语言 cookie 的请求上就等于 detectLang 调用次数
+ * （全站只有 routing.detectLang 读这个头）。改动前分别是 5 次与 2 次。
+ */
+describe("request URL is parsed once per request", () => {
+  function countingRequest(url: string, cookie?: string) {
+    const real = new Request(url, {
+      headers: {
+        "CF-Connecting-IP": "97.64.18.11",
+        ...(cookie ? { Cookie: cookie } : {}),
+      },
+    });
+    const reads = { url: 0, acceptLanguage: 0 };
+    Object.defineProperty(real, "url", {
+      get() {
+        reads.url += 1;
+        return url;
+      },
+    });
+    Object.defineProperty(real, "headers", {
+      value: new Proxy(real.headers, {
+        get(target, prop) {
+          if (prop === "get") {
+            return (name: string) => {
+              if (name.toLowerCase() === "accept-language") reads.acceptLanguage += 1;
+              return target.get(name);
+            };
+          }
+          const value = Reflect.get(target, prop, target);
+          return typeof value === "function" ? value.bind(target) : value;
+        },
+      }),
+    });
+    return { request: real, reads };
+  }
+
+  function run(request: Request) {
+    const deferred: Promise<unknown>[] = [];
+    return onRequest({
+      request,
+      env: {
+        ...keys,
+        ASSETS: {
+          fetch: async () =>
+            new Response("<html>services</html>", {
+              headers: { "Content-Type": "text/html; charset=utf-8" },
+            }),
+        },
+      } as Env,
+      next: async () => new Response("next", { status: 200 }),
+      waitUntil: (promise: Promise<unknown>) => {
+        deferred.push(promise);
+      },
+    });
+  }
+
+  it("parses the URL once and detects the language once for a page request", async () => {
+    const { request, reads } = countingRequest("https://limooo.cn/services");
+    const resp = await run(request);
+
+    expect(resp.status).toBe(200);
+    expect(reads.url).toBe(1);
+    // 中间件算过一次语言后要沿 withLangCookie/renderGatePage 复用，不能再算第二遍。
+    expect(reads.acceptLanguage).toBe(1);
+  });
+
+  it("still detects the language when the visitor already has a language cookie", async () => {
+    const { request, reads } = countingRequest(
+      "https://limooo.cn/services",
+      "user_lang_preference=ja-jp",
+    );
+    const resp = await run(request);
+
+    expect(resp.status).toBe(200);
+    expect(reads.url).toBe(1);
+    // 已有 cookie：一次都不必再检测（旧实现同样如此，这里锁住不倒退）。
+    expect(reads.acceptLanguage).toBe(0);
   });
 });

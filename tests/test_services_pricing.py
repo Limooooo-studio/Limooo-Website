@@ -1,14 +1,31 @@
+# Limooo - serverless personal website and admin system
+#
+# Copyright (C) 2026 Limooo <https://limooo.cn/>
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU Affero General Public License as published
+# by the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU Affero General Public License for more details.
+#
+# You should have received a copy of the GNU Affero General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
 """services.limooo.cn 价目表：CSV 是唯一数据源，构建时读取。"""
 
 import re
 
-import build
 import pytest
+
+import build
 from render_app import RENDER_APP
 from services_pricing import (
     CONVENTION_CSV,
     OUTDOOR_CSV,
-    SERVICES_DIR,
     load_pricing,
 )
 
@@ -98,7 +115,7 @@ def test_outdoor_rows_are_rendered_in_fixed_order(services_dir):
 )
 def test_bookable_column_drives_the_strikethrough(services_dir, bookable, expected):
     """`bookable` = no 加删除线；= yes 或留空（含整列不存在）都不加。"""
-    column = "" if bookable is None else f",bookable"
+    column = "" if bookable is None else ",bookable"
     cells = [bookable] * 4 if bookable is not None else [None] * 4
 
     def row(kind, who, price, cell):

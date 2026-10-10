@@ -317,7 +317,7 @@ Trusted sources are maintained in [`data/whitelist.txt`](https://github.com/Limo
 | `ASN/<number>` | Low-risk source (China Telecom / China Mobile / China Unicom, incl. Tietong and backbone AS9929). Intended to be served a Cloudflare Non-Interactive Challenge (`js_challenge`) instead of the Turnstile gate; that WAF rule is not deployed right now (see below). |
 | `IP-CIDR/<ip>/<mask>` | Fully allowed source (e.g. `IP-CIDR/97.64.18.11/32`); skips both the blocklist and the challenge gate. |
 
-The ASN list is sourced from [china-mainland-asn](https://github.com/xingpingcn/china-mainland-asn) (updated daily). The generated edge copy currently carries **320 low-risk ASNs** and **2 fully allowed IPs**. No WAF custom rule consumes these lists right now: the zone's `http_request_firewall_custom` phase is empty, and `ops/waf/rules.snapshot.json` keeps the historical `js_challenge` rule for rebuilds.
+The ASN list is sourced from [china-mainland-asn](https://github.com/xingpingcn/china-mainland-asn) (updated daily). The generated edge copy currently carries **320 low-risk ASNs** and **2 fully allowed IPs**. No WAF custom rule consumes these lists right now: the zone's `http_request_firewall_custom` phase is empty, and `ops/waf/rules.snapshot.json` mirrors the live phase as of its `captured_at` timestamp (0 rules at the last refresh) — rules deleted in the dashboard survive only in git history.
 
 Per-runtime trust: edge code only treats `IP-CIDR` entries as trusted
 (`isGateTrustedIp` → `functions/_data/gateTrust.ts`). After editing `data/whitelist.txt`,
@@ -492,7 +492,7 @@ The shape of the live deployment, re-read any time with
 3. **Secrets** live under **Pages → Settings → Environment variables → Encrypt**: the Turnstile pair, `GATE_HMAC_KEY`, `SESSION_HMAC_KEY`, `OBSERVABILITY_HMAC_KEY`, `VISITOR_IP_KEY`, `APPLE_ACCOUNT_ENCRYPTION_KEY` and the `ACCESS_*` bindings; `APPLEID_ENCRYPTION_KEY` and the two `AUTHENTIK_*` entries are leftovers that no runtime reads
 4. **Access** fronts `visitor.limooo.cn`, `account.limooo.cn` and `admin.limooo.cn` as self-hosted applications; there is no self-hosted IdP and no custom login form
 5. **Workers** run standalone: `limooo-status`, `limooo-blocklist-sync`, `limooo-d1-archive` and `image-watermark`; `status.limooo.cn` and `sink.limooo.cn` are Worker custom domains
-6. **Cloudflare rules**: the custom-firewall phase is empty (the `limooo_blocklist` IP List is ready for a rule); the cache phase serves static assets, legacy image paths and watermark-Worker responses for a year while both HTML page-cache rules are disabled; the dynamic-redirect phase is empty, and `ops/waf/rules.snapshot.json` keeps the historical WAF rule set for rebuilds
+6. **Cloudflare rules**: the custom-firewall phase is empty (the `limooo_blocklist` IP List is ready for a rule); the cache phase serves static assets, legacy image paths and watermark-Worker responses for a year while both HTML page-cache rules are disabled; the dynamic-redirect phase is empty, and `ops/waf/rules.snapshot.json` is a refresh-time mirror of that empty phase (removed rules live only in git history)
 7. **Smoke checks**: `https://limooo.cn/_health` → 200, `https://limooo.cn/?challenge=1` → 403, `https://docs.limooo.cn/` and `https://status.limooo.cn/` → 200
 
 The gate renders in place on every host, the real visitor IP is shown in the gate page

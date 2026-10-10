@@ -315,7 +315,7 @@ bash ops/docs_deploy.sh --dev          # local VitePress dev server
 | `ASN/<number>` | 低リスクのソース（中国電信／中国移動／中国聯通、鉄通とバックボーン AS9929 を含む）。Turnstile ゲートの代わりに Cloudflare の非対話型チャレンジ（`js_challenge`）を返す想定ですが、その WAF ルールは現在デプロイされていません（下記参照）。 |
 | `IP-CIDR/<ip>/<mask>` | 完全に許可されたソース（例：`IP-CIDR/97.64.18.11/32`）。ブロックリストとチャレンジゲートの両方をスキップします。 |
 
-ASN リストは [china-mainland-asn](https://github.com/xingpingcn/china-mainland-asn)（毎日更新）から取得します。生成されたエッジ側のコピーは現在 **320 件の低リスク ASN** と **2 件の完全許可 IP** を含みます。現時点でこれを参照する WAF カスタムルールはありません（ゾーンの `http_request_firewall_custom` フェーズは空で、`ops/waf/rules.snapshot.json` は再構築用に歴史的な `js_challenge` ルールを保持しています）。
+ASN リストは [china-mainland-asn](https://github.com/xingpingcn/china-mainland-asn)（毎日更新）から取得します。生成されたエッジ側のコピーは現在 **320 件の低リスク ASN** と **2 件の完全許可 IP** を含みます。現時点でこれを参照する WAF カスタムルールはありません（ゾーンの `http_request_firewall_custom` フェーズは空で、`ops/waf/rules.snapshot.json` は `captured_at` の**更新時点**のライブ状態をそのまま写します。直近の更新では 0 ルールです）。ダッシュボードで削除されたルールは git の履歴にのみ残ります。
 
 ランタイムごとの信頼範囲：エッジのコードが信頼するのは `IP-CIDR` のエントリだけです
 （`isGateTrustedIp` → `functions/_data/gateTrust.ts`）。`data/whitelist.txt` を編集したら、
@@ -488,7 +488,7 @@ docs.limooo.cn に公開されることはありません。
 3. **シークレット**は **Pages → Settings → Environment variables → Encrypt** にあります：Turnstile の 2 つ、`GATE_HMAC_KEY`、`SESSION_HMAC_KEY`、`OBSERVABILITY_HMAC_KEY`、`VISITOR_IP_KEY`、`APPLE_ACCOUNT_ENCRYPTION_KEY`、`ACCESS_*` バインディング。`APPLEID_ENCRYPTION_KEY` と 2 つの `AUTHENTIK_*` はどのランタイムも読まない残骸です
 4. **Access** が `visitor.limooo.cn`、`account.limooo.cn`、`admin.limooo.cn` を self-hosted アプリとして前段で保護します。自前の IdP も独自のログインフォームもありません
 5. **Worker** は独立して動作します：`limooo-status`、`limooo-blocklist-sync`、`limooo-d1-archive`、`image-watermark`。`status.limooo.cn` と `sink.limooo.cn` は Worker のカスタムドメインです
-6. **Cloudflare のルール**：カスタムファイアウォールのフェーズは空です（`limooo_blocklist` IP List はルールを待っている状態）。キャッシュのフェーズでは静的アセット、旧画像パス、ウォーターマーク Worker の応答を 1 年間キャッシュし、2 つの HTML ページキャッシュルールは無効です。動的リダイレクトのフェーズは空で、`ops/waf/rules.snapshot.json` が再構築用に過去の WAF ルールセットを保持します
+6. **Cloudflare のルール**：カスタムファイアウォールのフェーズは空です（`limooo_blocklist` IP List はルールを待っている状態）。キャッシュのフェーズでは静的アセット、旧画像パス、ウォーターマーク Worker の応答を 1 年間キャッシュし、2 つの HTML ページキャッシュルールは無効です。動的リダイレクトのフェーズは空で、`ops/waf/rules.snapshot.json` はその空のフェーズを更新時点で写したものです（削除されたルールは git の履歴にのみ残ります）
 7. **スモークチェック**：`https://limooo.cn/_health` → 200、`https://limooo.cn/?challenge=1` → 403、`https://docs.limooo.cn/` と `https://status.limooo.cn/` → 200
 
 ゲートはどのホストでもその場でレンダリングされ、ゲートページとログに実際の訪問者 IP が表示され、Access が唯一のアイデンティティ源であり続けます。

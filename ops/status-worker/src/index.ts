@@ -1,3 +1,22 @@
+/**
+ * Limooo - serverless personal website and admin system
+ *
+ * Copyright (C) 2026 Limooo <https://limooo.cn/>
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published
+ * by the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
+
 import { sendViaSmtp, type SmtpConfig } from "./smtp";
 import { runRetention } from "./retention";
 
@@ -210,7 +229,8 @@ export async function scheduleRetry(
 //
 // 通过 Cloudflare Email Service 的 `send_email` binding（env.EMAIL）发送。
 // 未配置 binding / 收件人时只记日志、不报错，保证探针本身不受影响。
-// 文案与 ops/email-templates/health-alert.i18n.json 对齐。
+// 文案的唯一来源是本文件的 ALERT_I18N（docs/22 W7-13）：
+// ops/email-templates/health-alert.i18n.json 已废弃，只留墓碑指向本文件。
 
 const ALERT_I18N: Record<string, Record<string, string>> = {
   "zh-cn": {

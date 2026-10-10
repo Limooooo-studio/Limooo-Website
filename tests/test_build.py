@@ -1,3 +1,20 @@
+# Limooo - serverless personal website and admin system
+#
+# Copyright (C) 2026 Limooo <https://limooo.cn/>
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU Affero General Public License as published
+# by the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU Affero General Public License for more details.
+#
+# You should have received a copy of the GNU Affero General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
 """构建脚本纯函数测试（不写 public/ 产物）。"""
 
 import json
@@ -68,8 +85,8 @@ def test_contact_survey_block_uses_limooo_shortlink_and_qr():
         block = html[html.index('id="surveyBlock"'):]
         block = block[:block.index("</a>")]
 
-        assert 'href="https://limooo.cn/link/photograph-form-%s"' % lang in block
-        assert 'data-qr="https://image.limooo.cn/qr-codes/form-services-%s.webp"' % lang in block
+        assert f'href="https://limooo.cn/link/photograph-form-{lang}"' in block
+        assert f'data-qr="https://image.limooo.cn/qr-codes/form-services-{lang}.webp"' in block
         assert "qr-trigger" in block
         assert "lime-official.feishu.cn" not in block
 
@@ -143,12 +160,12 @@ def test_html_lang_is_rendered_by_the_template_for_every_language():
     """W1-4：<html lang> 直接由模板渲染，四语都正确（不再靠字符串替换）。"""
     for lang in build.LANGS:
         html = build.render_page(RENDER_APP, "index.html", "/", lang)
-        assert '<html lang="%s">' % lang in html
-        assert 'data-lang="%s"' % lang in html
+        assert f'<html lang="{lang}">' in html
+        assert f'data-lang="{lang}"' in html
 
         gate = build.render_gate(RENDER_APP, lang)
-        assert '<html lang="%s">' % lang in gate
-        assert 'data-lang="%s"' % lang in gate
+        assert f'<html lang="{lang}">' in gate
+        assert f'data-lang="{lang}"' in gate
 
     # 模板里不允许再写死 zh-cn（契约 default_lang 是 en-us）
     for name in ("base.html", "auth.html", "redirect.html", "preview.html"):
@@ -226,8 +243,8 @@ def test_frontend_reads_contract_facts_from_data_attributes():
     html = build.render_page(RENDER_APP, "index.html", "/", "en-us")
     body_open = html[html.index("<body"):html.index(">", html.index("<body")) + 1]
 
-    assert 'data-supported-langs="%s"' % " ".join(build.LANGS) in body_open
-    assert 'data-root-domain="%s"' % build.ROOT_DOMAIN in body_open
+    assert f'data-supported-langs="{" ".join(build.LANGS)}"' in body_open
+    assert f'data-root-domain="{build.ROOT_DOMAIN}"' in body_open
     assert 'data-lang-cookie="user_lang_preference"' in body_open
     assert 'data-theme-cookie="limooo_theme"' in body_open
     assert 'data-lang-cookie-max-age="31536000"' in body_open
@@ -237,7 +254,7 @@ def test_frontend_reads_contract_facts_from_data_attributes():
     # 门禁页（auth.html，不继承 base.html）也要有同一批属性
     gate = build.render_gate(RENDER_APP, "en-us")
     gate_body = gate[gate.index("<body"):gate.index(">", gate.index("<body")) + 1]
-    assert 'data-supported-langs="%s"' % " ".join(build.LANGS) in gate_body
+    assert f'data-supported-langs="{" ".join(build.LANGS)}"' in gate_body
     assert 'data-lang-cookie="user_lang_preference"' in gate_body
 
     # 语言浮层条目由契约生成：条目数 == supported_langs 数，且每门语言一项
@@ -246,8 +263,8 @@ def test_frontend_reads_contract_facts_from_data_attributes():
         menu = page[page.index('id="langMenu"'):page.index("</nav>")]
         assert menu.count('data-action="setLang"') == len(build.LANGS)
         for code in build.LANGS:
-            assert 'data-lang="%s"' % code in menu
-        assert 'class="theme-option selected" data-lang="%s"' % lang in menu
+            assert f'data-lang="{code}"' in menu
+        assert f'class="theme-option selected" data-lang="{lang}"' in menu
 
     # 门禁页浮层同样由契约生成
     gate_menu = gate[gate.index('id="langMenu"'):]

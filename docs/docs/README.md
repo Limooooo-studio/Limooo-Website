@@ -310,7 +310,7 @@ bash ops/docs_deploy.sh --dev          # local VitePress dev server
 | `ASN/<number>` | 低风险来源（中国电信 / 中国移动 / 中国联通，含铁通与骨干网 AS9929）。本应下发 Cloudflare 非交互式质询（Non-Interactive Challenge，`js_challenge`）而不是 Turnstile 门禁；该 WAF 规则目前未部署（见下）。 |
 | `IP-CIDR/<ip>/<mask>` | 完全放行的来源（例如 `IP-CIDR/97.64.18.11/32`）；同时跳过黑名单与质询门禁。 |
 
-ASN 列表来源于 [china-mainland-asn](https://github.com/xingpingcn/china-mainland-asn)（每日更新）。生成的边缘副本当前包含 **320 个低风险 ASN** 与 **2 个完全放行 IP**。目前没有任何 WAF 自定义规则在用它：该区域的 `http_request_firewall_custom` 阶段是空的，`ops/waf/rules.snapshot.json` 只保留历史 `js_challenge` 规则供重建。
+ASN 列表来源于 [china-mainland-asn](https://github.com/xingpingcn/china-mainland-asn)（每日更新）。生成的边缘副本当前包含 **320 个低风险 ASN** 与 **2 个完全放行 IP**。目前没有任何 WAF 自定义规则在用它：该区域的 `http_request_firewall_custom` 阶段是空的，`ops/waf/rules.snapshot.json` 按 `captured_at` 记录**刷新那一刻**的线上状态（上次刷新为 0 条规则）——在 Dashboard 里删掉的规则只留在 git 历史里。
 
 各运行时的信任范围：边缘代码只把 `IP-CIDR` 条目视为可信（`isGateTrustedIp` →
 `functions/_data/gateTrust.ts`）。修改 `data/whitelist.txt` 之后，通过一次构建重新生成边缘副本
@@ -477,7 +477,7 @@ ASN 列表来源于 [china-mainland-asn](https://github.com/xingpingcn/china-mai
 3. **Secret** 位于 **Pages → Settings → Environment variables → Encrypt**：Turnstile 两个密钥、`GATE_HMAC_KEY`、`SESSION_HMAC_KEY`、`OBSERVABILITY_HMAC_KEY`、`VISITOR_IP_KEY`、`APPLE_ACCOUNT_ENCRYPTION_KEY` 与 `ACCESS_*` 绑定；`APPLEID_ENCRYPTION_KEY` 与两个 `AUTHENTIK_*` 是没有任何运行时代码读取的历史遗留
 4. **Access** 以前置自建应用（self-hosted）保护 `visitor.limooo.cn`、`account.limooo.cn` 与 `admin.limooo.cn`；没有自建 IdP，也没有自定义登录页
 5. **Worker** 独立运行：`limooo-status`、`limooo-blocklist-sync`、`limooo-d1-archive` 与 `image-watermark`；`status.limooo.cn` 与 `sink.limooo.cn` 是 Worker 自定义域名
-6. **Cloudflare 规则**：自定义防火墙阶段为空（`limooo_blocklist` IP List 已就绪，等着规则来用）；缓存阶段把静态资源、旧图片路径与水印 Worker 响应缓存一年，两条 HTML 页面缓存规则处于停用状态；动态重定向阶段为空，`ops/waf/rules.snapshot.json` 保留历史 WAF 规则集以便重建
+6. **Cloudflare 规则**：自定义防火墙阶段为空（`limooo_blocklist` IP List 已就绪，等着规则来用）；缓存阶段把静态资源、旧图片路径与水印 Worker 响应缓存一年，两条 HTML 页面缓存规则处于停用状态；动态重定向阶段为空，`ops/waf/rules.snapshot.json` 是刷新时刻对该空阶段的镜像（删掉的规则只存在于 git 历史里）
 7. **冒烟检查**：`https://limooo.cn/_health` → 200，`https://limooo.cn/?challenge=1` → 403，`https://docs.limooo.cn/` 与 `https://status.limooo.cn/` → 200
 
 门禁在每个主机上都原地渲染，门禁页与日志显示真实访客 IP，Access 仍是唯一的身份来源。

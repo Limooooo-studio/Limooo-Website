@@ -314,7 +314,7 @@ bash ops/docs_deploy.sh --dev          # local VitePress dev server
 | `ASN/<number>` | 저위험 소스(China Telecom / China Mobile / China Unicom, 톄퉁과 백본 AS9929 포함). Turnstile 게이트 대신 Cloudflare 비대화형 챌린지(`js_challenge`)를 받도록 되어 있지만, 그 WAF 규칙은 현재 배포되어 있지 않습니다(아래 참고). |
 | `IP-CIDR/<ip>/<mask>` | 완전 허용 소스(예: `IP-CIDR/97.64.18.11/32`)로, 차단 목록과 챌린지 게이트를 모두 건너뜁니다. |
 
-ASN 목록은 [china-mainland-asn](https://github.com/xingpingcn/china-mainland-asn)(매일 갱신)에서 가져옵니다. 생성된 엣지 사본은 현재 **저위험 ASN 320개**와 **완전 허용 IP 2개**를 담고 있습니다. 지금 이 목록을 쓰는 WAF 사용자 지정 규칙은 없습니다(존의 `http_request_firewall_custom` 단계가 비어 있고, `ops/waf/rules.snapshot.json`은 재구축용으로 과거 `js_challenge` 규칙을 보관합니다).
+ASN 목록은 [china-mainland-asn](https://github.com/xingpingcn/china-mainland-asn)(매일 갱신)에서 가져옵니다. 생성된 엣지 사본은 현재 **저위험 ASN 320개**와 **완전 허용 IP 2개**를 담고 있습니다. 지금 이 목록을 쓰는 WAF 사용자 지정 규칙은 없습니다(존의 `http_request_firewall_custom` 단계가 비어 있고, `ops/waf/rules.snapshot.json`은 `captured_at` **갱신 시점**의 라이브 상태를 그대로 반영합니다. 마지막 갱신 기준 0개 규칙입니다). 대시보드에서 삭제된 규칙은 git 기록에만 남습니다.
 
 런타임별 신뢰 범위: 엣지 코드는 `IP-CIDR` 항목만 신뢰합니다
 (`isGateTrustedIp` → `functions/_data/gateTrust.ts`). `data/whitelist.txt`를 수정한 뒤에는
@@ -475,7 +475,7 @@ ASN 목록은 [china-mainland-asn](https://github.com/xingpingcn/china-mainland-
 3. **시크릿**은 **Pages → Settings → Environment variables → Encrypt** 아래에 있습니다: Turnstile 두 개, `GATE_HMAC_KEY`, `SESSION_HMAC_KEY`, `OBSERVABILITY_HMAC_KEY`, `VISITOR_IP_KEY`, `APPLE_ACCOUNT_ENCRYPTION_KEY`, `ACCESS_*` 바인딩. `APPLEID_ENCRYPTION_KEY`와 두 개의 `AUTHENTIK_*`는 어떤 런타임도 읽지 않는 잔재입니다
 4. **Access**가 `visitor.limooo.cn`, `account.limooo.cn`, `admin.limooo.cn`를 self-hosted 애플리케이션으로 앞단에서 보호합니다. 자체 IdP도, 사용자 지정 로그인 폼도 없습니다
 5. **Worker**는 독립적으로 실행됩니다: `limooo-status`, `limooo-blocklist-sync`, `limooo-d1-archive`, `image-watermark`. `status.limooo.cn`과 `sink.limooo.cn`은 Worker 사용자 지정 도메인입니다
-6. **Cloudflare 규칙**: 사용자 지정 방화벽 단계는 비어 있습니다(`limooo_blocklist` IP List가 규칙을 기다리는 상태). 캐시 단계는 정적 자산, 레거시 이미지 경로, 워터마크 Worker 응답을 1년간 캐시하고 두 개의 HTML 페이지 캐시 규칙은 비활성입니다. 동적 리다이렉트 단계는 비어 있고, `ops/waf/rules.snapshot.json`이 재구축용으로 과거 WAF 규칙 세트를 보관합니다
+6. **Cloudflare 규칙**: 사용자 지정 방화벽 단계는 비어 있습니다(`limooo_blocklist` IP List가 규칙을 기다리는 상태). 캐시 단계는 정적 자산, 레거시 이미지 경로, 워터마크 Worker 응답을 1년간 캐시하고 두 개의 HTML 페이지 캐시 규칙은 비활성입니다. 동적 리다이렉트 단계는 비어 있고, `ops/waf/rules.snapshot.json`은 그 빈 단계를 갱신 시점에 그대로 반영합니다(삭제된 규칙은 git 기록에만 남습니다)
 7. **스모크 검사**: `https://limooo.cn/_health` → 200, `https://limooo.cn/?challenge=1` → 403, `https://docs.limooo.cn/`와 `https://status.limooo.cn/` → 200
 
 게이트는 모든 호스트에서 그 자리에서 렌더링되고, 게이트 페이지와 로그에 실제 방문자 IP가 표시되며, Access가 유일한 신원 소스로 남습니다.

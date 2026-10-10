@@ -1,3 +1,22 @@
+/**
+ * Limooo - serverless personal website and admin system
+ *
+ * Copyright (C) 2026 Limooo <https://limooo.cn/>
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published
+ * by the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
+
 /** 语言 cookie 的全站共享行为（Domain=.limooo.cn，主域与所有子域一致）。 */
 
 import { readFileSync } from "node:fs";
@@ -8,8 +27,10 @@ import {
   detectLang,
   isExemptPath,
   langCookieHeader,
+  requestUrl,
+  withLangCookie,
 } from "./routing";
-import { DEFAULT_LANG, SUPPORTED_LANGS } from "./config";
+import { DEFAULT_LANG, LANG_COOKIE, SUPPORTED_LANGS } from "./config";
 
 function req(host: string, cookie?: string, accept?: string): Request {
   const headers: Record<string, string> = { Host: host };
@@ -121,5 +142,36 @@ describe("langCookieHeader domain scope", () => {
     expect(header).toContain("Path=/");
     expect(header).toContain("SameSite=Lax");
     expect(header).toContain("Secure");
+  });
+});
+
+/** docs/22 增量 ②：URL 每请求只解析一次，语言检测结果沿调用链复用。 */
+describe("request URL parsing and language reuse", () => {
+  it("parses the request URL once per Request object", () => {
+    const request = new Request("https://limooo.cn/services?challenge=1");
+    const first = requestUrl(request);
+    expect(requestUrl(request)).toBe(first);
+    expect(first.searchParams.get("challenge")).toBe("1");
+  });
+
+  it("withLangCookie uses the language it is given and falls back to detection", () => {
+    const request = new Request("https://limooo.cn/");
+    const explicit = withLangCookie(request, new Response("body"), "ko-kr");
+    expect(explicit.headers.get("Set-Cookie")).toContain(`${LANG_COOKIE}=ko-kr`);
+
+    // 不传 lang 时保持旧行为：自己检测（这里由 Accept-Language 决定）。
+    const detected = withLangCookie(
+      new Request("https://limooo.cn/", { headers: { "Accept-Language": "ja-JP" } }),
+      new Response("body"),
+    );
+    expect(detected.headers.get("Set-Cookie")).toContain(`${LANG_COOKIE}=ja-jp`);
+  });
+
+  it("does not touch the cookie when the visitor already has one", () => {
+    const request = new Request("https://limooo.cn/", {
+      headers: { Cookie: `${LANG_COOKIE}=zh-cn` },
+    });
+    const resp = withLangCookie(request, new Response("body"), "ko-kr");
+    expect(resp.headers.get("Set-Cookie")).toBeNull();
   });
 });

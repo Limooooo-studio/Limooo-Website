@@ -43,17 +43,27 @@ import time
 import urllib.error
 import urllib.request
 
-# 仓库根目录（本文件位于 src/ 下，向上取一层）
+from cidr import normalize_cidr, parse_cidr
+
+# 仓库根目录（本文件位于 src/ 下，向上取一层）。
+# 带 as 的常量各自独立成一条 import——ruff isort 就是这么切别名导入的
+# （按配置里的原名排序），合并回一条会被 I001 判红。
 from config import (
     BLOCKLIST_FILE as BLOCKLIST_TXT,
-    CLOUDFLARE_API_BASE as API,
+)
+from config import (
     CF_BATCH_SIZE as BATCH,
+)
+from config import (
     CF_LIST_NAME as LIST_NAME,
+)
+from config import (
+    CLOUDFLARE_API_BASE as API,
+)
+from config import (
     D1_DATABASE_ID,
     ENV_FILE,
 )
-from cidr import normalize_cidr, parse_cidr
-
 
 # Match x.x.x.0/24
 CIDR24_RE = re.compile(r'^(\d+\.\d+\.\d+)\.0/24$')
@@ -171,7 +181,7 @@ def sync_cloudflare() -> int:
     try:
         # Find existing list
         resp = _call(token, "GET", f"{API}/accounts/{account_id}/rules/lists?per_page=100")
-        lst = next((l for l in resp.get("result", []) if l["name"] == LIST_NAME), None)
+        lst = next((item for item in resp.get("result", []) if item["name"] == LIST_NAME), None)
 
         if lst is None:
             resp = _call(token, "POST", f"{API}/accounts/{account_id}/rules/lists",
@@ -184,7 +194,9 @@ def sync_cloudflare() -> int:
         # Current items in CF (canonical cidr -> item id for deletion), follow cursor pagination
         cur = {}
         base = f"{API}/accounts/{account_id}/rules/lists/{lst['id']}/items"
-        url = base
+        # url 在循环里会被赋成 None 来结束翻页（见下面那行 `if after else None`），
+        # 所以类型是 str | None；循环条件 `while url` 已经把 None 挡在外面。
+        url: str | None = base
         while url:
             resp = _call(token, "GET", url)
             for it in resp.get("result", []):

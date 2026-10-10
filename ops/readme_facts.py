@@ -324,7 +324,7 @@ def check(facts: dict) -> list[str]:
 
     # TTL / 超时
     ttl_hours = facts["gate_ttl_seconds"] // 3600
-    if f"1h TTL" not in text and f"({ttl_hours}h" not in text:
+    if "1h TTL" not in text and f"({ttl_hours}h" not in text:
         problems.append(f"gate cookie TTL ({ttl_hours}h) not stated")
     timeout_s = facts["timeouts"]["siteverify_ms"] // 1000
     if f"{timeout_s}-second server-side timeout" not in text:
@@ -438,7 +438,7 @@ def live_facts() -> dict:
 
     lists = api("GET", f"/accounts/{account}/rules/lists")
     if lists.get("success"):
-        facts["lists"] = sorted(f"{l.get('name')} ({l.get('kind')})" for l in lists["result"])
+        facts["lists"] = sorted(f"{entry.get('name')} ({entry.get('kind')})" for entry in lists["result"])
     for name in ("limooo-status", "limooo-blocklist-sync", "limooo-d1-archive"):
         schedules = api("GET", f"/accounts/{account}/workers/scripts/{name}/schedules")
         if schedules.get("success"):
@@ -454,7 +454,7 @@ def print_live_facts(facts: dict) -> None:
     print(f"  {'project':<22} {facts['pages'].get('name')} ({facts['pages'].get('subdomain')})")
     print(f"  {'domains':<22} {', '.join(facts['pages'].get('domains', []))}")
     print(f"  {'production secrets':<22} {', '.join(facts['pages'].get('secrets', []))}")
-    print(f"Workers")
+    print("Workers")
     print(f"  {', '.join(facts['workers'])}")
     print("DNS (proxied records)")
     for record in facts["dns"]:

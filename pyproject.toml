@@ -1,6 +1,15 @@
 [tool.mypy]
 python_version = "3.11"
 files = ["src"]
+# src/ 下的模块是**平铺导入**的（`from config import ...` / `import portfolio`），
+# 没有包前缀。不给 mypy 这条搜索路径，它会把 src/ 内部互相引用的 9 条导入
+# 全报成 import-not-found（配置问题，不是代码问题）。
+mypy_path = "src:typings"
+# 光给 mypy_path 还不够：src/ 没有 __init__.py，mypy 会同时按 "src.cidr"
+# 和 "cidr" 两个模块名收同一个文件（Source file found twice）。打开
+# explicit_package_bases 后 src/ 被当作搜索根而不是包，两边统一成 "cidr"。
+explicit_package_bases = true
+namespace_packages = true
 check_untyped_defs = true
 no_implicit_optional = true
 warn_redundant_casts = true

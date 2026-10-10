@@ -1,3 +1,20 @@
+# Limooo - serverless personal website and admin system
+#
+# Copyright (C) 2026 Limooo <https://limooo.cn/>
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU Affero General Public License as published
+# by the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU Affero General Public License for more details.
+#
+# You should have received a copy of the GNU Affero General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
 """Limooo 构建期只读渲染应用。
 
 构建静态页面时不需要启动 Flask 业务应用，也不需要读取生产密钥、创建
@@ -11,40 +28,29 @@ import functools
 
 from flask import Flask, g
 
-from config import (
-    DEFAULT_LANG,
-    GATE_HOST,
-    IMAGE_ASSET_BASE_URL,
-    IMAGE_WATERMARK_BASE_URL,
-    KEY_FALLBACK_LANG,
-    LANG_COOKIE,
-    LANG_COOKIE_MAX_AGE,
-    ROOT_DOMAIN,
-    SOURCE_REPO_URL,
-    STATIC_DIR,
-    SUPPORTED_LANGS,
-    TEMPLATES_DIR,
-    THEME_COOKIE,
-    THEME_COOKIE_MAX_AGE,
-    load_translations,
-)
-from portfolio import portfolio_items, portfolio_source_dir
-from services_pricing import load_pricing
-
-# SERVICES_DIR 必须**在调用时**从模块读，不能在 import 时绑定成常量：
-# 构建期缓存把它当 cache key，而测试会 monkeypatch services_pricing.SERVICES_DIR
-# 指向临时 CSV 目录。import 时绑定会让缓存永远只认仓库里那份，测试静默假绿
-# （2026-10-11 实测：全量 pytest 下渲染用例拿到真 CSV 的价格）。
-import services_pricing
-
 # 契约常量同理：语言列表 / cookie 名与 TTL / 根域名都要**在调用时**从 config
 # 模块现读。import 时绑定会让 monkeypatch 了 config.SUPPORTED_LANGS 的测试拿到
 # 旧列表，lru_cache 更会把旧结果钉死——渲染用例假绿、加语言不生效（W1-3 的
 # 「加语言只改契约一处」正是靠这条成立）。
 import config
 
+# SERVICES_DIR 必须**在调用时**从模块读，不能在 import 时绑定成常量：
+# 构建期缓存把它当 cache key，而测试会 monkeypatch services_pricing.SERVICES_DIR
+# 指向临时 CSV 目录。import 时绑定会让缓存永远只认仓库里那份，测试静默假绿
+# （2026-10-11 实测：全量 pytest 下渲染用例拿到真 CSV 的价格）。
+import services_pricing
+from config import (
+    DEFAULT_LANG,
+    KEY_FALLBACK_LANG,
+    STATIC_DIR,
+    TEMPLATES_DIR,
+    load_translations,
+)
+from portfolio import portfolio_items, portfolio_source_dir
+from services_pricing import load_pricing
 
-@functools.lru_cache(maxsize=None)
+
+@functools.cache
 def _cached_portfolio_items(source_dir: str) -> list[dict[str, object]]:
     """作品集卡片清单：一次构建里 ``src/static/portfolio`` 不会变，只扫描一次。
 
@@ -60,7 +66,7 @@ def _cached_portfolio_items(source_dir: str) -> list[dict[str, object]]:
     return portfolio_items(source_dir)
 
 
-@functools.lru_cache(maxsize=None)
+@functools.cache
 def _cached_pricing(services_dir: str) -> dict[str, object]:
     """价目表：``docs/services/*.csv`` 每个 (目录) 只读一次（原先每次渲染都读）。
 
@@ -82,7 +88,7 @@ def _lang_flag(code: str) -> str:
     return "".join(chr(0x1F1E6 + ord(ch) - ord("A")) for ch in region)
 
 
-@functools.lru_cache(maxsize=None)
+@functools.cache
 def _cached_lang_options(supported_langs: tuple[str, ...]) -> list[dict[str, str]]:
     """语言浮层数据源：契约的 supported_langs 决定条目，模板只负责渲染。
 

@@ -1,4 +1,23 @@
 /**
+ * Limooo - serverless personal website and admin system
+ *
+ * Copyright (C) 2026 Limooo <https://limooo.cn/>
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published
+ * by the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
+
+/**
  * Limooo 访客 / Ray 埋点（仅最小字段）。
  *
  * 隐私约定：
@@ -15,7 +34,7 @@ import { ipHash } from "./logging";
 import { encryptVisitorIp } from "./visitor-ip";
 import { GATE_TRUST } from "../_data/gateTrust";
 import { IMAGES_HOSTNAME, REDIRECT_HOSTNAME } from "./config";
-import { clientCountryForLogs, clientIpForLogs } from "./routing";
+import { clientCountryForLogs, clientIpForLogs, requestUrl } from "./routing";
 
 let trackingSchemaReady = false;
 /** 上次尝试建表的时间戳（毫秒）；见 ensureTrackingSchema 与 docs/22 W9-19。 */
@@ -216,7 +235,7 @@ async function ensureTrackingSchema(env: Env): Promise<void> {
 /** 响应完成后记录访客；同一小时/IP/页面/状态聚合为一行，计数仍保持精确。 */
 export async function recordVisit(env: Env, request: Request, status: number): Promise<void> {
   if (!env.DB) return;
-  const url = new URL(request.url);
+  const url = requestUrl(request);
   const ip = clientIpForLogs(request);
   try {
     await ensureTrackingSchema(env);
@@ -253,7 +272,7 @@ export async function recordRay(
   durationMs: number,
 ): Promise<void> {
   if (!env.DB) return;
-  const url = new URL(request.url);
+  const url = requestUrl(request);
   const ray = request.headers.get("CF-Ray") ?? "";
   if (!ray) return;
   try {

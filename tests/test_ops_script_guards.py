@@ -1,3 +1,20 @@
+# Limooo - serverless personal website and admin system
+#
+# Copyright (C) 2026 Limooo <https://limooo.cn/>
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU Affero General Public License as published
+# by the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU Affero General Public License for more details.
+#
+# You should have received a copy of the GNU Affero General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
 """ops/deploy.sh 与 ops/migrate_d1.sh 的安全闸门（docs/22 · W3）。
 
 这些用例全部离线运行：
@@ -89,7 +106,7 @@ def wrangler_payload(names: list[str]) -> str:
 
 def write_fake_wrangler(path: Path, file_error: str, versions: list[int]) -> Path:
     """假 wrangler：--file 一律按 file_error 失败，SELECT version 返回 versions。"""
-    rows = ",".join('{"version":%d}' % v for v in versions)
+    rows = ",".join(f'{{"version":{v}}}' for v in versions)
     path.write_text(
         "#!/bin/bash\n"
         'cmd=""; file=""\n'

@@ -1,4 +1,23 @@
 /**
+ * Limooo - serverless personal website and admin system
+ *
+ * Copyright (C) 2026 Limooo <https://limooo.cn/>
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published
+ * by the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
+
+/**
  * Limooo Pages 中间件编排层。
  *
  * 本文件只负责请求编排、统一安全头和埋点时机；路由/门禁/跳转/封禁逻辑分别
@@ -18,6 +37,7 @@ import {
   PUBLIC_FILES_PREFIX,
   pageAsset,
   preserveSetCookie,
+  requestUrl,
   withLangCookie,
   type RequestContext,
 } from "./_lib/routing";
@@ -131,17 +151,22 @@ export function pageCacheKey(host: string, assetPath: string, lang: string): URL
   return url;
 }
 
-/** 按 host + 语言缓存预渲染页面，避免每次请求都重复读取 ASSETS。 */
+/**
+ * 按 host + 语言缓存预渲染页面，避免每次请求都重复读取 ASSETS。
+ *
+ * `host` 可选：调用方已经知道请求主机（中间件在编排层解析过一次）时直接传进来，
+ * 免得为了拼缓存键再解析一遍 URL；不传则回落到 requestUrl(context.request)。
+ */
 async function cachedPageAsset(
   context: RequestContext,
   assetPath: string,
   lang: string,
+  host?: string,
 ): Promise<Response | null> {
   const { env, request } = context;
   if (!env.ASSETS) return null;
 
-  const host = new URL(request.url).hostname;
-  const cacheUrl = pageCacheKey(host, assetPath, lang);
+  const cacheUrl = pageCacheKey(host ?? requestUrl(request).hostname, assetPath, lang);
   const cache = typeof caches !== "undefined"
     ? (caches as unknown as { default?: CacheLike }).default
     : undefined;
@@ -172,11 +197,16 @@ async function cachedPageAsset(
   return response;
 }
 
-/** 统一注入安全响应头；API 只加 nosniff，避免破坏 JSON 接口。 */
-export function withSecurityHeaders(request: Request, resp: Response): Response {
+/**
+ * 统一注入安全响应头；API 只加 nosniff，避免破坏 JSON 接口。
+ *
+ * `url` 可选：`onRequest` 已经解析过请求 URL 时传进来，省掉一次重复解析；
+ * 旧调用点只传前两个参数也能工作（行为与逐次 `new URL(request.url)` 相同）。
+ */
+export function withSecurityHeaders(request: Request, resp: Response, url?: URL): Response {
   const headers = new Headers(resp.headers);
   preserveSetCookie(headers, resp.headers);
-  const isApi = new URL(request.url).pathname.startsWith("/api/");
+  const isApi = (url ?? requestUrl(request)).pathname.startsWith("/api/");
   for (const [name, value] of Object.entries(SECURITY_HEADERS)) {
     if (isApi && name !== "X-Content-Type-Options") continue;
     headers.set(name, value);
@@ -200,12 +230,13 @@ async function adminAuthRedirect(
   env: RequestContext["env"],
   request: Request,
   hostname: string,
+  url?: URL,
 ): Promise<Response | null> {
   if (hostname !== VISITOR_HOSTNAME && hostname !== APPLE_ACCOUNT_HOSTNAME) return null;
   try {
     if (await requireAuth(env, request)) return null;
-    const url = new URL(request.url);
-    const next = `${url.pathname}${url.search}`;
+    const current = url ?? requestUrl(request);
+    const next = `${current.pathname}${current.search}`;
     return new Response(null, {
       status: 302,
       headers: {
@@ -255,7 +286,8 @@ async function renewGateCookie(
 /** 中间件核心编排，导出供本地测试 mock 依赖。 */
 export async function handleOnRequest(context: RequestContext): Promise<Response> {
   const { request, env, next } = context;
-  const url = new URL(request.url);
+  // 解析一次、全链路复用（requestUrl 记忆化 + 下面显式往下传的 lang/host/url）。
+  const url = requestUrl(request);
   const configError = runtimeConfigError(env);
   if (configError) return configErrorResponse(configError);
   const { hostname, pathname } = url;
@@ -357,9 +389,9 @@ export async function handleOnRequest(context: RequestContext): Promise<Response
     const lang = detectLang(request);
     const page = pageAsset(hostname, pathname, lang);
     if (page) {
-      const resp = await cachedPageAsset(context, page, lang);
+      const resp = await cachedPageAsset(context, page, lang, hostname);
       if (resp?.ok) {
-        return withLangCookie(request, resp);
+        return withLangCookie(request, resp, lang);
       }
     }
     if (env.ASSETS) {
@@ -422,12 +454,16 @@ export async function handleOnRequest(context: RequestContext): Promise<Response
     const lang = detectLang(request);
     const asset = pageAsset(hostname, pathname, lang);
     if (asset) {
-      const authRedirect = await adminAuthRedirect(env, request, hostname);
-      if (authRedirect) return withLangCookie(request, authRedirect);
-      const resp = await cachedPageAsset(context, asset, lang);
+      const authRedirect = await adminAuthRedirect(env, request, hostname, url);
+      if (authRedirect) return withLangCookie(request, authRedirect, lang);
+      const resp = await cachedPageAsset(context, asset, lang, hostname);
       if (resp?.ok) {
         // 会话临近到期时在响应里顺带续签，访客不会在浏览中途被弹回门禁页。
-        return withLangCookie(request, await renewGateCookie(context, resp, trust.shouldRenew));
+        return withLangCookie(
+          request,
+          await renewGateCookie(context, resp, trust.shouldRenew),
+          lang,
+        );
       }
     }
     // 门禁主机没有别的内容页：已验证访客也在原地渲染门禁页（200），
@@ -437,9 +473,14 @@ export async function handleOnRequest(context: RequestContext): Promise<Response
         host: hostname,
         next: pathname + url.search,
         passed: true,
+        lang,
       });
     }
-    return withLangCookie(request, await renewGateCookie(context, await next(), trust.shouldRenew));
+    return withLangCookie(
+      request,
+      await renewGateCookie(context, await next(), trust.shouldRenew),
+      lang,
+    );
   }
 
   // 带了 __gate 却仍不放行：把校验结论落进 events，用于定位「验证成功又被拦」。
@@ -462,9 +503,11 @@ export async function handleOnRequest(context: RequestContext): Promise<Response
 
 export const onRequest: PagesFunction = async (context) => {
   const { request, env } = context;
-  const url = new URL(request.url);
+  // handleOnRequest 内部解析的就是同一个 URL 对象（requestUrl 按 Request 记忆化），
+  // 这里取回来的同时显式喂给安全头与埋点，全程只解析一次。
+  const url = requestUrl(request);
   const startedAt = Date.now();
-  const resp = withSecurityHeaders(request, await handleOnRequest(context));
+  const resp = withSecurityHeaders(request, await handleOnRequest(context), url);
 
   // 门禁拒绝与已封来源不落访问/Ray 日志，避免扫描流量反过来耗尽 D1 配额。
   const trackResponse = resp.status !== 403;

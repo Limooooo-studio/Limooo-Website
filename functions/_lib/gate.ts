@@ -1,7 +1,26 @@
+/**
+ * Limooo - serverless personal website and admin system
+ *
+ * Copyright (C) 2026 Limooo <https://limooo.cn/>
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published
+ * by the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
+
 /** 人机验证门禁：cookie 校验/签发、Turnstile 验证、门禁页渲染、配置接口。 */
 
 import { queryAll } from "./d1";
-import { networkAddress, normalizeIp } from "./cidr";
+import { contains, networkAddress, normalizeIp } from "./cidr";
 import { logEvent } from "./logging";
 import type { RequestContext } from "./routing";
 import {
@@ -12,8 +31,10 @@ import {
   isGateTrustedIp,
   isPublicHost,
   preserveSetCookie,
+  requestUrl,
   safeNextPath,
   sanitizeHost,
+  templateText,
   withLangCookie,
 } from "./routing";
 import { isTrustedCrawler } from "./tracking";
@@ -238,7 +259,7 @@ export async function resolveGateTrust(
  */
 export async function handleGateEntry(context: RequestContext): Promise<Response> {
   const { request, env } = context;
-  const url = new URL(request.url);
+  const url = requestUrl(request);
   const forceChallenge = url.searchParams.get("challenge") === "1";
   const host = sanitizeHost(url.searchParams.get("host"));
   const next = safeNextPath(url.searchParams.get("next") ?? "/");
@@ -282,7 +303,7 @@ export async function handleGateEntry(context: RequestContext): Promise<Response
  * 不会再出现「两个入口判定不一致导致反复验证」。查询参数原样保留。
  */
 export function handleLegacyGateRedirect(context: RequestContext): Response {
-  const url = new URL(context.request.url);
+  const url = requestUrl(context.request);
   const target = new URL(`https://${url.hostname}/gate`);
   target.search = url.search;
   return new Response(null, {
@@ -325,6 +346,8 @@ export interface GateRenderOptions {
   unavailable?: boolean;
   /** 已通过门禁的访客仍要求看这张页（门禁主机原地渲染）时为 true，状态码用 200。 */
   passed?: boolean;
+  /** 调用方已经算过 detectLang 时传进来，避免对同一个请求算两遍。 */
+  lang?: string;
 }
 
 /** 从生成好的 <lang>/auth.html 读取门禁页，只注入 host/next/error/lang。 */
@@ -335,13 +358,13 @@ export async function renderGatePage(
   const { request, env } = context;
   const host = sanitizeHost(opts.host);
   const next = safeNextPath(opts.next ?? "/");
-  const lang = detectLang(request);
+  const lang = opts.lang ?? detectLang(request);
   const status = opts.unavailable ? 503 : opts.passed ? 200 : 403;
-  if (!env.ASSETS) return new Response("Gate page unavailable", { status: 503 });
 
-  const asset = await env.ASSETS.fetch(new URL(`/${lang}/auth.html`, BASE_URL));
-  if (!asset.ok) return new Response("Gate page unavailable", { status: 503 });
-  const source = await asset.text();
+  // 模板文本按 lang 进程内复用（首次 ASSETS.fetch，之后直读内存）；
+  // 注入逻辑与逐请求渲染路径完全一致，只有取模板这一步被省掉。
+  const source = await templateText(env, lang, "auth.html");
+  if (source === null) return new Response("Gate page unavailable", { status: 503 });
   // 语言由模板的 <html lang="{{ g.lang }}"> 在构建期渲染；`{{lang}}` 占位符已不在
   // 任何模板或产物里（对改动前的 public/ 做 grep 零命中），不再做无谓替换。
   const html = source
@@ -366,6 +389,7 @@ export async function renderGatePage(
         "Vary": "Cookie",
       },
     }),
+    lang,
   );
 }
 
@@ -461,42 +485,148 @@ async function removedBanAfterGateFailures(
   }*/
 }
 
-/** 封禁检查：规范化请求 IP 后，按 blocked_ips(network, prefix) 精确查询（DB 异常时放行）。 */
+/**
+ * blocked_ips 全量列表的进程内缓存时长（毫秒）。
+ *
+ * 60 秒是「管理员改封禁后最多 1 分钟生效」与「每 isolate 每分钟最多一次全表读」
+ * 之间的折中；注意缓存只影响**读**，写路径（/api/blocklist、自动封禁）不进这里。
+ */
+export const BLOCKED_LIST_TTL_MS = 60_000;
+
+/**
+ * 缓存键是 **env.DB 绑定对象本身**（WeakMap，不是闭包单例）。
+ *
+ * 同一个 isolate 里可能先后出现不同的 DB 绑定（多环境、测试里各自注入的桩），
+ * 用绑定对象做键才能保证 A 环境的封禁名单绝不会被拿去判 B 环境的请求。
+ */
+interface BlockedListCacheEntry {
+  /** 全量列表；`null` = 上次读取失败，冷却窗口内直接走原来的逐前缀查询。 */
+  rows: BlockedRow[] | null;
+  at: number;
+}
+
+const blockedListCache = new WeakMap<object, BlockedListCacheEntry>();
+
+/** 全量拉取用的一句 SQL；`active = 1` 与逐前缀查询保持同一过滤条件。 */
+const BLOCKED_LIST_SQL = "SELECT cidr, network, prefix FROM blocked_ips WHERE active = 1";
+
+/**
+ * 在内存里复现逐前缀查询的匹配语义。
+ *
+ * 等价性依据：`blocked_ips.network` 一律是**规范化网络地址**（写侧
+ * `_lib/cidr.ts` 的 parseCidr / `src/cidr.py` 都是先掩码再规范化后才落库），
+ * 因此 `contains(network, prefix, ip) === true` 与 SQL 的
+ * `networkAddress(ip, prefix) = network` 是同一个谓词；`prefix` 越界（超过地址
+ * 位宽）两边都判不匹配。最大前缀的选取与查询路径一致（逐块 `ORDER BY prefix
+ * DESC LIMIT 1` 后再取全局最大），`cidr` 是主键，同一前缀不可能有两行，故无歧义。
+ */
+function matchBlockedRow(
+  rows: BlockedRow[],
+  normalized: string,
+  maxPrefix: number,
+): BlockedRow | null {
+  let matched: BlockedRow | null = null;
+  let matchedPrefix = -1;
+  for (const row of rows) {
+    const prefix = Number(row.prefix);
+    if (!Number.isInteger(prefix) || prefix < 0 || prefix > maxPrefix) continue;
+    if (typeof row.network !== "string") continue;
+    if (!contains(row.network, prefix, normalized)) continue;
+    if (prefix > matchedPrefix) {
+      matchedPrefix = prefix;
+      matched = row;
+    }
+  }
+  return matched;
+}
+
+/**
+ * 读一次全量封禁列表，并把**这次尝试**写进缓存（成功写列表、失败写 null）。
+ *
+ * 失败也写缓存是刻意的：D1 抖动期间不能让每个请求都先打一次必然失败的全量读再回退，
+ * 否则一次故障被放大成两倍往返（与 `logging.ensureEventSchema` 的冷却策略同源）。
+ * 冷却窗口内直接走原来的逐前缀查询路径，语义与改动前完全一致。
+ */
+async function readBlockedList(
+  db: import("./env").Env["DB"] & object,
+  now: number,
+): Promise<BlockedRow[] | null> {
+  let rows: BlockedRow[] | null = null;
+  try {
+    const stmt = db.prepare(BLOCKED_LIST_SQL);
+    const result = await stmt.all<BlockedRow>();
+    // 驱动没有明确回答 success: true 时（老驱动/测试桩）不据此判定，
+    // 一律回退到原来的逐前缀查询——宁可多查一次，也不能凭一个可疑的空列表放行。
+    if (result?.success === true) rows = result.results ?? [];
+  } catch {
+    rows = null;
+  }
+  blockedListCache.set(db, { rows, at: now });
+  return rows;
+}
+
+/** 原来的逐前缀查询路径：缓存未命中或不可用时原样使用（IPv4 1 次 / IPv6 3 次往返）。 */
+async function queryBlockedRows(
+  db: import("./env").Env["DB"],
+  normalized: string,
+  maxPrefix: number,
+): Promise<BlockedRow | null> {
+  const candidates: Array<[string, number]> = [];
+  for (let prefix = 0; prefix <= maxPrefix; prefix++) {
+    const network = networkAddress(normalized, prefix);
+    if (network) candidates.push([network, prefix]);
+  }
+  let matched: BlockedRow | null = null;
+  // 每对 network/prefix 占两个绑定参数；49 对可保持在 D1 单语句 100 参数限制内。
+  // 因而 IPv4 只需一次查询，IPv6 由原先七次降为三次。
+  for (let start = 0; start < candidates.length; start += 49) {
+    const chunk = candidates.slice(start, start + 49);
+    const conditions = chunk.map(() => "(network = ? AND prefix = ?)").join(" OR ");
+    const rows = await queryAll<BlockedRow>(
+      db,
+      `SELECT cidr, network, prefix
+       FROM blocked_ips
+       WHERE active = 1 AND (${conditions})
+       ORDER BY prefix DESC
+       LIMIT 1`,
+      ...chunk.flatMap(([network, prefix]) => [network, prefix]),
+    );
+    for (const row of rows) {
+      if (!matched || row.prefix > matched.prefix) matched = row;
+    }
+  }
+  return matched;
+}
+
+/**
+ * 封禁检查：规范化请求 IP 后按 blocked_ips 匹配（DB 异常时放行）。
+ *
+ * 命中进程内缓存（TTL 见 BLOCKED_LIST_TTL_MS）时在 JS 侧匹配全量列表，一次库都不查；
+ * 缓存冷或读失败时回退到原来的逐前缀查询路径，fail-open 语义不变。
+ * 命中后的 `block_match` 事件字段与判定真值与查询路径逐字段一致（同一 `cidr` 取值）。
+ */
 export async function isBlocked(
   env: { DB?: import("./env").Env["DB"] },
   request: Request,
   ip: string,
 ): Promise<boolean> {
   if (!env.DB || !ip) return false;
-  const url = new URL(request.url);
+  const url = requestUrl(request);
   const normalized = normalizeIp(ip);
   if (!normalized) return false;
   const maxPrefix = normalized.includes(":") ? 128 : 32;
-  const candidates: Array<[string, number]> = [];
-  for (let prefix = 0; prefix <= maxPrefix; prefix++) {
-    const network = networkAddress(normalized, prefix);
-    if (network) candidates.push([network, prefix]);
-  }
   try {
-    let matched: BlockedRow | null = null;
-    // 每对 network/prefix 占两个绑定参数；49 对可保持在 D1 单语句 100 参数限制内。
-    // 因而 IPv4 只需一次查询，IPv6 由原先七次降为三次。
-    for (let start = 0; start < candidates.length; start += 49) {
-      const chunk = candidates.slice(start, start + 49);
-      const conditions = chunk.map(() => "(network = ? AND prefix = ?)").join(" OR ");
-      const rows = await queryAll<BlockedRow>(
-        env.DB,
-        `SELECT cidr, network, prefix
-         FROM blocked_ips
-         WHERE active = 1 AND (${conditions})
-         ORDER BY prefix DESC
-         LIMIT 1`,
-        ...chunk.flatMap(([network, prefix]) => [network, prefix]),
-      );
-      for (const row of rows) {
-        if (!matched || row.prefix > matched.prefix) matched = row;
-      }
-    }
+    const now = Date.now();
+    const cached = blockedListCache.get(env.DB);
+    // 冷却窗口内直接用缓存里那份（可能是「上次读失败」的 null）；过期或没有缓存
+    // 才重新读一次全量列表。`null` 一律回退到原来的逐前缀查询路径。
+    const entry =
+      cached && now - cached.at < BLOCKED_LIST_TTL_MS
+        ? cached
+        : { rows: await readBlockedList(env.DB, now), at: now };
+    const matched = entry.rows
+      ? matchBlockedRow(entry.rows, normalized, maxPrefix)
+      : await queryBlockedRows(env.DB, normalized, maxPrefix);
     if (matched) {
       await logEvent(env as never, "block_match", request, {
         ip: normalized,

@@ -1,4 +1,23 @@
 /**
+ * Limooo - serverless personal website and admin system
+ *
+ * Copyright (C) 2026 Limooo <https://limooo.cn/>
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published
+ * by the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
+
+/**
  * 统一跳转页 `renderRedirectPage` 测试（docs/22 W5-11）。
  *
  * 零测试的这段代码把**请求方可控**的 `?to=` 注入生成好的 HTML：`escapeHtml`
@@ -139,5 +158,47 @@ describe("isRedirectHost", () => {
     expect(isRedirectHost(REDIRECT_HOSTNAME)).toBe(true);
     expect(isRedirectHost("limooo.cn")).toBe(false);
     expect(isRedirectHost(`evil.${REDIRECT_HOSTNAME}`)).toBe(false);
+  });
+});
+
+/**
+ * 模板文本缓存（docs/22 增量 ③）：同一语言的模板只从 ASSETS 取一次，
+ * 注入仍然逐请求执行；不同语言各取各的；取回失败不缓存。
+ */
+describe("renderRedirectPage template cache", () => {
+  it("fetches the template once for repeated renders of the same language", async () => {
+    const router = assets();
+    const url = `https://${REDIRECT_HOSTNAME}/?to=${encodeURIComponent(`${BASE_URL}/portfolio`)}`;
+    const first = await render(url, { ASSETS: router } as Env);
+    const second = await render(url, { ASSETS: router } as Env);
+
+    expect(vi.mocked(router.fetch)).toHaveBeenCalledTimes(1);
+    expect(first.html).toBe(second.html);
+    expect(first.html).toContain('<link rel="preload" as="image" href="https://images.limooo.cn/');
+    expect(first.html).not.toContain("{{");
+  });
+
+  it("keeps one template per language", async () => {
+    const router = assets();
+    const url = `https://${REDIRECT_HOSTNAME}/?to=${encodeURIComponent(`${BASE_URL}/`)}`;
+    await render(url, { ASSETS: router } as Env);
+    await renderRedirectPage({
+      request: new Request(url, { headers: { Cookie: `${LANG_COOKIE}=ko-kr` } }),
+      env: { ASSETS: router } as Env,
+      next: async () => new Response("next"),
+      waitUntil: vi.fn(),
+    } as never);
+
+    expect(vi.mocked(router.fetch).mock.calls.map((call) => String(call[0]))).toEqual([
+      `${BASE_URL}/en-us/redirect.html`,
+      `${BASE_URL}/ko-kr/redirect.html`,
+    ]);
+  });
+
+  it("does not cache a failed template fetch", async () => {
+    const router = assets(TEMPLATE, false);
+    expect((await render(`https://${REDIRECT_HOSTNAME}/`, { ASSETS: router } as Env)).resp.status).toBe(503);
+    expect((await render(`https://${REDIRECT_HOSTNAME}/`, { ASSETS: router } as Env)).resp.status).toBe(503);
+    expect(vi.mocked(router.fetch)).toHaveBeenCalledTimes(2);
   });
 });

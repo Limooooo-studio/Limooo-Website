@@ -1,4 +1,22 @@
 #!/usr/bin/env python3
+
+# Limooo - serverless personal website and admin system
+#
+# Copyright (C) 2026 Limooo <https://limooo.cn/>
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU Affero General Public License as published
+# by the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU Affero General Public License for more details.
+#
+# You should have received a copy of the GNU Affero General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
 """校验 ops/security-headers.json 与 Pages 侧 functions/_lib/security.ts 一致。
 
 只依赖标准库。05 的安全头 JSON 是唯一文案源，本脚本用于防止两侧镜像漂移。
@@ -12,7 +30,6 @@ import json
 import re
 import sys
 from pathlib import Path
-
 
 ROOT = Path(__file__).resolve().parent.parent
 JSON_PATH = ROOT / "ops" / "security-headers.json"

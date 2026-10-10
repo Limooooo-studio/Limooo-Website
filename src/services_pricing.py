@@ -185,7 +185,10 @@ def load_convention(services_dir: str | None = None) -> list[dict[str, object]]:
     if missing:
         raise RuntimeError(f"{filename} is missing column(s): {', '.join(sorted(missing))}")
 
-    plans: list[dict[str, object]] = []
+    # 与 plans 同步累积 (张数, 计划)；张数在这里还是真 int，排序不用再从
+    # dict[str, object] 里 `int(...)` 抠一次（那一步 mypy 判 call-overload：
+    # object 上不能调 int）。返回前只取计划本身，语义与「按 shots 升序」一致。
+    ranked: list[tuple[int, dict[str, object]]] = []
     seen: set[int] = set()
     for index, row in enumerate(rows, start=2):
         shots_raw = row["shots"]
@@ -202,22 +205,25 @@ def load_convention(services_dir: str | None = None) -> list[dict[str, object]]:
         seen.add(shots)
         bookable = _parse_bookable(filename, index, row)
         price = _parse_price(row["price"])
-        plans.append(
-            {
-                "shots": shots,
-                "price": price,
-                # 没有价格 → 模板把数字渲染成「-」（CNY 前缀与单位后缀保留）
-                "no_price": price is None,
-                "unit_key": CONVENTION_UNIT_KEYS.get(shots),
-                "bookable": bookable,
-                "strikethrough": not bookable,
-            }
+        ranked.append(
+            (
+                shots,
+                {
+                    "shots": shots,
+                    "price": price,
+                    # 没有价格 → 模板把数字渲染成「-」（CNY 前缀与单位后缀保留）
+                    "no_price": price is None,
+                    "unit_key": CONVENTION_UNIT_KEYS.get(shots),
+                    "bookable": bookable,
+                    "strikethrough": not bookable,
+                },
+            )
         )
 
     # 档位数量与张数完全由 CSV 决定（加一档不用改代码），只按张数升序排列，
-    # 保证 plan-grid 的视觉顺序稳定。
-    plans.sort(key=lambda item: int(item["shots"]))
-    return plans
+    # 保证 plan-grid 的视觉顺序稳定（ranked 按 CSV 读入顺序插入，sort 稳定）。
+    ranked.sort(key=lambda entry: entry[0])
+    return [plan for _shots, plan in ranked]
 
 
 def load_outdoor(services_dir: str | None = None) -> dict[tuple[str, str], dict[str, object]]:

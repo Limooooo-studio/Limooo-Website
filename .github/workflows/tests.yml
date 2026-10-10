@@ -2,6 +2,8 @@ name: tests
 
 # Step set must stay identical to ops/ci_check.sh (the local replica of this file).
 # Coverage steps only report; they never fail the build (no thresholds yet).
+# ruff / mypy come from ops/requirements.txt and are real gates here; the local
+# script probes for them (an older build venv may predate them) and prints SKIP.
 
 on:
   push:
@@ -16,6 +18,8 @@ jobs:
         with:
           python-version: "3.11"
       - run: pip install -r ops/requirements.txt pytest pytest-cov
+      - run: python -m ruff check src ops tests
+      - run: python -m mypy src
       - run: python -m pytest -q --cov=src --cov-report=term-missing
       - run: python ops/check_security_headers.py
       - run: python ops/readme_facts.py --check

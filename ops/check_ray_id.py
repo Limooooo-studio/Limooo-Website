@@ -1,5 +1,23 @@
 #!/usr/bin/env python3
 
+# Limooo - serverless personal website and admin system
+#
+# Copyright (C) 2026 Limooo <https://limooo.cn/>
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU Affero General Public License as published
+# by the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU Affero General Public License for more details.
+#
+# You should have received a copy of the GNU Affero General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+
 """按 Cloudflare Ray ID 反查请求记录（边缘 + D1 双源），供管理员终端排障。
 
 数据源：
@@ -162,7 +180,7 @@ def edge_lookup(
     不能假装降级：聚合数据集里没有 Ray ID，给不出这个请求的记录，所以如实报错
     并让调用方重试。返回 (格式化行, 说明)。
     """
-    since = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(minutes=minutes)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    since = (dt.datetime.now(dt.UTC) - dt.timedelta(minutes=minutes)).strftime("%Y-%m-%dT%H:%M:%SZ")
     exact = f'''{{
       viewer {{ zones(filter: {{zoneTag: "{zone}"}}) {{
         httpRequestsAdaptive(limit: 10, filter: {{rayName: "{ray}", datetime_geq: "{since}"}}) {{

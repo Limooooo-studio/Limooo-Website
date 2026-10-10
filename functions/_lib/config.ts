@@ -1,3 +1,22 @@
+/**
+ * Limooo - serverless personal website and admin system
+ *
+ * Copyright (C) 2026 Limooo <https://limooo.cn/>
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published
+ * by the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
+
 /** 由 build.py 自动生成，勿手改；修改配置请编辑 config-contract.json。 */
 export const CONTRACT = {
   "schema_version": 1,
@@ -117,40 +136,25 @@ export const CONTRACT = {
 export const ROOT_DOMAIN = CONTRACT.root_domain;
 export const BASE_URL = `https://${ROOT_DOMAIN}`;
 export const WWW_HOSTNAME = `www.${ROOT_DOMAIN}`;
-export const SERVICES_HOSTNAME = `services.${ROOT_DOMAIN}`;
-export const CONTACT_HOSTNAME = `contact.${ROOT_DOMAIN}`;
 export const VISITOR_HOSTNAME = `visitor.${ROOT_DOMAIN}`;
 export const APPLE_ACCOUNT_HOSTNAME = `account.${ROOT_DOMAIN}`;
 export const REDIRECT_HOSTNAME = `redirect.${ROOT_DOMAIN}`;
 export const GATE_HOSTNAME = `auth.${ROOT_DOMAIN}`;
 export const IMAGES_HOSTNAME = `images.${ROOT_DOMAIN}`;
-export const GATE_HOST = GATE_HOSTNAME;
-export const REDIRECT_HOST = `https://${REDIRECT_HOSTNAME}/`;
-export const IMAGE_BASE = `https://${IMAGES_HOSTNAME}`;
 export const APPLE_ACCOUNT_DOMAIN = `@${APPLE_ACCOUNT_HOSTNAME}`;
 export const PUBLIC_HOSTS: Set<string> = new Set(CONTRACT.public_hosts);
-export const MANAGED_HOSTS: Set<string> = new Set(CONTRACT.managed_hosts);
-export const SHARED_LANG_HOSTS: Set<string> = new Set(CONTRACT.shared_lang_hosts);
 export const PAGE_ROUTES: Record<string, Record<string, string>> = CONTRACT.page_routes;
 export const IMAGE_ASSET_HOSTNAME = CONTRACT.image_asset_host;
 export const IMAGE_WATERMARK_HOSTNAME = CONTRACT.image_watermark_host;
-export const IMAGE_ASSET_BASE = `https://${IMAGE_ASSET_HOSTNAME}`;
-export const IMAGE_WATERMARK_BASE = `https://${IMAGE_WATERMARK_HOSTNAME}`;
 export const GATE_TRUST = CONTRACT.gate_trust;
-export const OBSERVABILITY_HMAC_ENV = CONTRACT.observability_hmac_env;
-export const WHITELIST_FILE = CONTRACT.whitelist_file;
 export const SUPPORTED_LANGS = CONTRACT.supported_langs;
 export const DEFAULT_LANG = CONTRACT.default_lang;
-export const KEY_FALLBACK_LANG = CONTRACT.key_fallback_lang;
 export const LANG_COOKIE = CONTRACT.lang_cookie;
 export const LANG_COOKIE_MAX_AGE = CONTRACT.lang_cookie_max_age;
-export const THEME_COOKIE = CONTRACT.theme_cookie;
-export const THEME_COOKIE_MAX_AGE = CONTRACT.theme_cookie_max_age;
 export const GATE_COOKIE = CONTRACT.gate_cookie;
 export const SESSION_COOKIE = CONTRACT.session_cookie;
 export const PENDING_COOKIE = CONTRACT.pending_cookie;
 export const CSRF_COOKIE = CONTRACT.csrf_cookie;
 export const GATE_TTL_SECONDS = CONTRACT.gate_ttl_seconds;
 export const SESSION_TTL_SECONDS = CONTRACT.session_ttl_seconds;
-export const PENDING_TTL_SECONDS = CONTRACT.pending_ttl_seconds;
 export const REVEAL_MAX_AUTH_AGE_SECONDS = CONTRACT.reveal_max_auth_age_seconds;

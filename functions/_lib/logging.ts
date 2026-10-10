@@ -1,3 +1,22 @@
+/**
+ * Limooo - serverless personal website and admin system
+ *
+ * Copyright (C) 2026 Limooo <https://limooo.cn/>
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published
+ * by the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
+
 /** 统一结构化事件日志（Pages Functions 侧）。
  *
  * 每个事件输出一行完整 JSON（字段与 Flask 侧 src/app.py 的 log_event 保持一致），
@@ -7,7 +26,7 @@
 
 import { execute, executeBatch } from "./d1";
 import type { Env } from "./env";
-import { clientCountryForLogs, clientIpForLogs } from "./routing";
+import { clientCountryForLogs, clientIpForLogs, requestUrl } from "./routing";
 import { hmacSha256Hex } from "./crypto";
 
 let eventSchemaReady = false;
@@ -139,7 +158,7 @@ export async function logEvent(
   request: Request,
   fields: LogEventFields = {},
 ): Promise<void> {
-  const url = new URL(request.url);
+  const url = requestUrl(request);
   const ip = fields.ip ?? clientIpForLogs(request);
   const payload = {
     event,
