@@ -22,7 +22,7 @@ Flask==3.1.3
 cryptography==50.0.0
 requests==2.34.2
 pillow==12.3.0
-cairosvg==2.8.2
+cairosvg==2.9.1
 
 # 检查工具（ruff / mypy）。它们不是运行时依赖，但 CI 与本地闸门要在同一个
 # 解释器里找到它们（mypy 还得能解析 src/ import 的 Flask / PIL，才能给出真
