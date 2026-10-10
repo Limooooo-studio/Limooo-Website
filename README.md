@@ -27,6 +27,7 @@ A fully serverless personal website and admin system running at [limooo.cn](http
 | Human verification | Cloudflare Turnstile, gate page rendered in place | Cloudflare + browser |
 | Auth | Cloudflare Access (Zero Trust JWT, self-verified by the Worker) | Cloudflare |
 | Monitoring & retention | `ops/status-worker` (Cron Triggers + Durable Object alarms) | Cloudflare Workers |
+| D1 archive | `ops/d1-archive` (daily cron) | Cloudflare Workers |
 | Blocklist sync | `ops/sync-worker` (daily cron → Cloudflare IP List) | Cloudflare Workers |
 | Image watermarking | `ops/image-watermark` (path-normalizing proxy) | Cloudflare Workers |
 | Static assets / originals backup | Pages asset server + private R2 bucket `limooo-originals` | Cloudflare |
@@ -37,8 +38,11 @@ A fully serverless personal website and admin system running at [limooo.cn](http
 ```
 ├── src/
 │   ├── config.py          # unified config: paths, languages, domains, DB/IP utils (consumes config-contract.json)
-│   ├── auto_block.py      # legacy log scan + blocklist → D1 sync (no origin host to scan any more; kept for reference)
+│   ├── auto_block.py      # manual blocklist.txt → D1 reconciliation (D1 is the authority)
+│   ├── cidr.py            # CIDR parsing helpers
+│   ├── portfolio.py       # portfolio image / thumbnail helpers
 │   ├── render_app.py      # build-time read-only renderer used by src/build.py
+│   ├── services_pricing.py        # CSV-driven price list for services.limooo.cn
 │   ├── build.py           # Pages static build (python3 src/build.py)
 │   ├── static/            # static css/js/fonts + icons/portfolio/QR codes
 │   └── templates/         # Jinja2 page templates
@@ -46,8 +50,7 @@ A fully serverless personal website and admin system running at [limooo.cn](http
 ├── LICENSE.md             # AGPL-3.0
 ├── data/                  # runtime data (generated; git-ignored except blocklist.txt / whitelist.txt)
 │   ├── blocklist.txt      # auditable snapshot of D1 blocked_ips (D1 is the sole authority)
-│   ├── whitelist.txt      # trusted ASNs (low-risk) + fully allowed IPs/CIDRs
-│   └── gate_trust.json    # generated gate trust config
+│   └── whitelist.txt      # trusted ASNs (low-risk) + fully allowed IPs/CIDRs
 ├── secrets/               # secrets & certificates, git-ignored
 │   ├── webauthn.env       # env file read by the deploy scripts
 │   └── apple_account_encryption.key     # Apple Account password encryption key
@@ -58,15 +61,26 @@ A fully serverless personal website and admin system running at [limooo.cn](http
 │   ├── docs_deploy.sh     # docs.limooo.cn build + deploy (VitePress → Pages project limooo-docs)
 │   ├── docs_headers.py    # generates the docs site `_headers` (CSP hashes + cache)
 │   ├── ci_check.sh        # local replica of .github/workflows/tests.yml
-│   ├── security-headers.json      # single source of the response-header baseline
-│   ├── check_config_contract.py / check_gate_trust.py / check_security_headers.py
-│   ├── migrations/        # D1 schema migrations
+│   ├── run-tests.sh       # test runner used locally
+│   ├── install_git_hooks.sh       # installs the pre-push hook
+│   ├── readme_facts.py    # re-reads the facts on this page (--check / --live)
+│   ├── migrate_d1.sh      # D1 migrations (--dry-run / --remote)
+│   ├── workers_deploy.sh  # standalone Worker deploys
 │   ├── export_d1.py       # unified D1 import SQL/JSON export (apple-account | blocklist)
-│   ├── prune_d1.py        # legacy D1 retention script (live retention now runs in status-worker)
+│   ├── prune_d1.py        # manual D1 retention and aggregation (scheduled retention runs in status-worker)
+│   ├── d1_client.py       # Cloudflare API client for D1
 │   ├── upload_originals.sh        # private R2 backup of portfolio originals
+│   ├── security-headers.json      # single source of the response-header baseline
+│   ├── tailwind.config.js # Tailwind config for the prebuilt CSS
+│   ├── check_config_contract.py / check_gate_trust.py / check_security_headers.py / check_ip_rays.py / check_ray_id.py / check_visitor_id.py
+│   ├── migrations/        # D1 schema migrations
+│   ├── waf/               # WAF rule snapshots
+│   ├── cloudflare/        # Cloudflare resource inventory (declarative)
+│   ├── email-templates/   # transactional email framework + i18n copy
+│   ├── fonts/             # gate-diagnostic font subset
 │   ├── status-worker/     # Worker: probes, status page, alerting, D1 retention
 │   ├── image-watermark/   # Worker: image.limooo.cn watermark normalizer
-│   ├── d1-archive/        # D1 snapshot/archive Worker
+│   ├── d1-archive/        # Worker: D1 snapshot/archive (cron 00:00)
 │   ├── sync-worker/       # Worker: D1 blocked_ips → Cloudflare IP List (cron 03:30)
 │   └── requirements.txt   # Python dependencies
 ├── functions/             # Cloudflare Pages Functions
@@ -128,10 +142,10 @@ bash ops/pages_deploy.sh
 bash ops/deploy.sh --all
 ```
 
-**Zero-VPS scripts (rewritten 2026-09-17)**: `ops/deploy.sh` is the single deploy
-entry point (the old `ops/upload.sh` forwarder was folded into it — one script, so
-there are no parallel copies to drift apart); `ops/pages_deploy.sh` handles build +
-Pages. `--dry-run` prints the plan without writing to any remote.
+**Deploy entry points**: `ops/deploy.sh` is the single deploy entry point — commit +
+push + Pages + docs, plus `--worker=<name>` for one standalone Worker;
+`ops/pages_deploy.sh` handles build + Pages. `--dry-run` prints the plan without
+writing to any remote.
 
 By default `deploy.sh` is **quiet**: one status line per step, and a step's full log
 is dumped only if that step fails. Add `--full` to stream everything (build manifest,
@@ -166,23 +180,30 @@ used for Apple Account passwords and the encrypted visitor IP column.
 
 ## Cron jobs
 
-There is no VPS crontab any more (retired 2026-09-17). All scheduling now lives on
-Cloudflare, as Worker Cron Triggers declared in each Worker's `wrangler.toml`:
+All scheduling lives on Cloudflare as Worker Cron Triggers declared in each Worker's
+`wrangler.toml`. `python3 ops/readme_facts.py` re-reads this table, the retention
+windows and every path in the tree below:
 
 | Schedule | Worker | Job |
 | --- | --- | --- |
 | `* * * * *` | `ops/status-worker` | HTTP/D1 probes every minute; a Durable Object alarm re-checks every 10s while a probe is down, and alerts on state change |
-| `47 3 * * *` | `ops/status-worker` | D1 retention (`src/retention.ts`): prunes `ray_log_v2` (7d), `visitors_v2` / `visitor_rollups` (30d), `events` / `heartbeats` / `probe_uptime_daily` (90d) |
-| `30 3 * * *` | `ops/sync-worker` | Mirrors active D1 `blocked_ips` rows to the Cloudflare IP List |
+| `47 3 * * *` | `ops/status-worker` | D1 retention (`src/retention.ts`): prunes `ray_log_v2` (7d), `visitors_v2` (30d), `visitor_rollups` (30d), `heartbeats` (30d), `events` (90d) and `probe_uptime_daily` (90d) |
+| `30 3 * * *` | `ops/sync-worker` | Mirrors active D1 `blocked_ips` rows to the Cloudflare IP List `limooo_blocklist` |
+| `0 0 * * *` | `ops/d1-archive` | D1 snapshot/archive run |
 
-TLS certificates are issued and renewed by Cloudflare for the Pages custom domains,
-so `acme.sh` is gone too. `ops/migrate_d1.sh` and `ops/workers_deploy.sh` are manual,
-`--dry-run`-capable maintenance entry points.
+TLS certificates are issued and renewed by Cloudflare for the Pages custom domains.
+`ops/migrate_d1.sh` and `ops/workers_deploy.sh` are manual, `--dry-run`-capable
+maintenance entry points.
+
+`python3 ops/readme_facts.py --check` re-reads the schedules, retention windows, TTLs
+and directory tree from this repository and fails when this page drifts; `--live` reads
+the deployed side (D1 counters, Pages hosts and secrets, DNS, WAF, Worker schedules)
+from Cloudflare.
 
 ## Deployment
 
-There is no server to deploy to: the target is Cloudflare Pages (`limooo`) plus the
-standalone Workers. From the repository root:
+The deploy target is Cloudflare Pages (`limooo`) plus the standalone Workers, all
+through the Cloudflare API. From the repository root:
 
 ```bash
 cd site
@@ -201,8 +222,8 @@ locally, pass `--pages` / `--docs` explicitly.
 Output is quiet by default (one status line per step); add `--full` to watch the whole
 process. `--dry-run` works with any combination of the flags above.
 
-Credentials are read from the local `secrets/webauthn.env`; there are no ssh, rsync,
-systemd or Nginx steps.
+Credentials are read from the local `secrets/webauthn.env`; every step runs over the
+Cloudflare API or Git.
 
 ### Docs site (docs.limooo.cn)
 
@@ -244,10 +265,12 @@ bash ops/docs_deploy.sh --dev          # local VitePress dev server
 - The `__gate` cookie is `<unix-expiry>.<HMAC-SHA256 hex>` (1h TTL, `HttpOnly`,
   `Domain=.limooo.cn`), minted and validated entirely at the edge.
 - Identity comes from Cloudflare Access: the Worker self-verifies
-  `Cf-Access-Jwt-Assertion` (RS256, JWKS cached 1h) and maps AUD → role. There is no
-  self-hosted IdP and no custom login form.
+  `Cf-Access-Jwt-Assertion` (RS256, JWKS cached 1h) and maps AUD → role, so Access is
+  the only login surface.
 - Keys and ciphertext stored separately, and never committed to the repository
-- Blocking layers: app-level 403/Worker → Cloudflare WAF + IP List at the edge
+- Blocking layers: the app-level D1 blocklist answers 403 at the edge, and
+  `ops/sync-worker` keeps the Cloudflare IP List `limooo_blocklist` in step with the
+  active rows for a WAF rule to consume (that custom rule is not deployed right now)
 - Admin writes (create/update/delete) require the admin role; viewer is read-only
 - Visitor IPs are never returned by list APIs; the full IP is Fernet-encrypted in
   `visitor_rollups.ip_enc` and decrypted one row at a time for admins
@@ -258,15 +281,15 @@ Trusted sources are maintained in [`data/whitelist.txt`](data/whitelist.txt), on
 
 | Entry | Effect |
 | --- | --- |
-| `ASN/<number>` | Low-risk source (China Telecom / China Mobile / China Unicom, incl. Tietong and backbone AS9929). Served a Cloudflare Non-Interactive Challenge (`js_challenge`) instead of the Turnstile gate. |
+| `ASN/<number>` | Low-risk source (China Telecom / China Mobile / China Unicom, incl. Tietong and backbone AS9929). Intended to be served a Cloudflare Non-Interactive Challenge (`js_challenge`) instead of the Turnstile gate; that WAF rule is not deployed right now (see below). |
 | `IP-CIDR/<ip>/<mask>` | Fully allowed source (e.g. `IP-CIDR/97.64.18.11/32`); skips both the blocklist and the challenge gate. |
 
-The ASN list is sourced from [china-mainland-asn](https://github.com/xingpingcn/china-mainland-asn) (updated daily) and mirrored to the WAF low-risk `js_challenge` rule. Allowed IPs are mirrored to `functions/_data/gateTrust.ts` via `ops/check_gate_trust.py` and to a Cloudflare WAF skip rule.
+The ASN list is sourced from [china-mainland-asn](https://github.com/xingpingcn/china-mainland-asn) (updated daily). The generated edge copy currently carries **320 low-risk ASNs** and **2 fully allowed IPs**. No WAF custom rule consumes these lists right now: the zone's `http_request_firewall_custom` phase is empty, and `ops/waf/rules.snapshot.json` keeps the historical `js_challenge` rule for rebuilds.
 
 Per-runtime trust: edge code only treats `IP-CIDR` entries as trusted
-(`isGateTrustedIp` → `functions/_data/gateTrust.ts`). `ASN/` lines are mirrored to the
-Cloudflare WAF `js_challenge` rule. After editing `data/whitelist.txt`, regenerate the edge
-copy with a build (`bash ops/build.sh`, which runs `ops/check_gate_trust.py --emit`).
+(`isGateTrustedIp` → `functions/_data/gateTrust.ts`). After editing `data/whitelist.txt`,
+regenerate the edge copy with a build (`bash ops/build.sh`, which runs
+`ops/check_gate_trust.py --emit`).
 
 ## Source of truth
 
@@ -300,8 +323,8 @@ Runtime split:
 - `ops/export_d1.py`: generate D1 import SQL (output in `ops/out/`, git-ignored)
 - `ops/migrations/007_visitor_status_indexes.sql`: adds `(status, ts)` and `(status, ip_hash, ts)` indexes for visitor status filtering
 - `ops/sync-worker/`: a daily 03:30 Worker cron syncs active D1 `blocked_ips` rows to the Cloudflare IP List; `auto_block.py cf` is for explicit maintenance only
-- Note: Pages exposes `POST /logout/backchannel` and revokes D1 `auth_sessions`
-  by `sub`. The legacy Flask `/logout/backchannel` is no longer deployed.
+- Note: Pages exposes `POST /logout/backchannel`, which revokes D1 `auth_sessions`
+  by `sub`.
 
 ### Environment variables
 
@@ -315,6 +338,7 @@ Configured under **Pages project settings → Environment variables → Encrypt 
 | `ACCESS_TEAM_DOMAIN` | Cloudflare Access team domain; also the JWT `iss` used for verification |
 | `ACCESS_ADMIN_AUDS` / `ACCESS_VIEWER_AUDS` | Comma-separated Access application AUD tags mapped to the admin / viewer role (admin wins) |
 | `VISITOR_IP_KEY` | Fernet key for the encrypted full visitor IP column (`visitor_rollups.ip_enc`) |
+| `OBSERVABILITY_HMAC_KEY` | HMAC key for the privacy-minimized visitor IP hash (`functions/_lib/tracking.ts`); the gate fails closed without it |
 | `SESSION_HMAC_KEY` | Pages session-cookie signing key (separate from `GATE_HMAC_KEY`) |
 | `APPLE_ACCOUNT_ENCRYPTION_KEY` | Fernet key (from `secrets/apple_account_encryption.key`) |
 
@@ -322,9 +346,9 @@ Local development: copy `.dev.vars.example` to `.dev.vars` and fill in real valu
 
 ### Gate behavior
 
-Every request is checked for the signed `__gate` cookie. Cloudflare `botManagement.verifiedBot` is accepted as a verified search-engine trust signal; arbitrary `Googlebot`/`GPTBot` User-Agent strings and client-supplied `cf_clearance` cookies do not bypass the gate. Low-risk China Telecom / Mobile / Unicom ASNs are handled by the Cloudflare WAF `js_challenge` tier, while edge code trusts only the generated whitelist (`data/whitelist.txt` → `functions/_data/gateTrust.ts`) for a full bypass.
+Every request is checked for the signed `__gate` cookie. Cloudflare `botManagement.verifiedBot` is accepted as a verified search-engine trust signal; arbitrary `Googlebot`/`GPTBot` User-Agent strings and client-supplied `cf_clearance` cookies do not bypass the gate. Low-risk China Telecom / Mobile / Unicom ASNs are listed for the WAF `js_challenge` tier (no such rule is deployed at the moment), while edge code trusts only the generated whitelist (`data/whitelist.txt` → `functions/_data/gateTrust.ts`) for a full bypass.
 
-Unverified requests get the Turnstile gate page **in place**: the host and path never change. The middleware renders `public/<lang>/auth.html` at the requested URL with status `403`, and `POST /__gate/verify` answers on that same origin with `Set-Cookie: __gate=…` (1h, `Domain=.limooo.cn`), after which the page reloads the original target. `auth.limooo.cn` is the gate host — it serves the same page at its own root (no 404, no redirect to the main site) and owns the `/__gate/config|diag|verify` endpoints — but it is no longer a redirect target.
+Unverified requests get the Turnstile gate page **in place**: the host and path never change. The middleware renders `public/<lang>/auth.html` at the requested URL with status `403`, and `POST /__gate/verify` answers on that same origin with `Set-Cookie: __gate=…` (1h, `Domain=.limooo.cn`), after which the page reloads the original target. `auth.limooo.cn` is the gate host: it serves the same page at its own root and owns the `/__gate/config|diag|verify` endpoints.
 
 Every host that renders the gate is served by the same edge code, so there is no second gate implementation to keep in sync.
 
@@ -350,32 +374,32 @@ CSV and deploying — no template edit.
 
 | file | columns | fills |
 | --- | --- | --- |
-| `docs/services/convention.csv` | `张数,价格[,是否接单]` | 01 Convention, one card per shot-count tier |
-| `docs/services/outdoor.csv` | `类型,人数,价格[,是否接单]` | 02 Outdoor, studio/outdoor × solo/duo |
+| `docs/services/convention.csv` | `shots,price[,bookable]` | 01 Convention, one card per shot-count tier |
+| `docs/services/outdoor.csv` | `type,people,price[,bookable]` | 02 Outdoor, studio/outdoor × solo/duo |
 
 Only the numbers, the tier set and the availability come from the CSV; labels,
 unit suffixes and the notes block still come from `locales/*.json`
 (`plan_studio_solo`, `unit_per_shot`, …).
 
-**`是否接单` (optional column)** drives both the struck-through price style and
+**`bookable` (optional column)** drives both the struck-through price style and
 the studio row in the notes block:
 
-- per tier: `否` → that tier's price renders with
-  `class="plan-price strikethrough"`; `是`, an empty cell, or the whole column
+- per tier: `no` → that tier's price renders with
+  `class="plan-price strikethrough"`; `yes`, an empty cell, or the whole column
   absent → normal price
-- notes block: if **every** 棚拍 tier is `否`, the studio row shows the paused
+- notes block: if **every** studio tier is `no`, the studio row shows the paused
   wording (`studio_paused`); as soon as one studio tier is bookable it shows
   `studio_bookable` instead
 
-So "temporarily not booking" is data end to end: flip 棚拍 from `否` to `是` in
+So "temporarily not booking" is data end to end: flip studio from `no` to `yes` in
 `outdoor.csv` and the strikethrough *and* the paused note both disappear on the
 next deploy, with no template or locale edit. The two can never disagree. Any
 other value (e.g. `maybe`) fails the build rather than silently guessing.
 
-**A `价格` cell that is not a positive integer renders as `-`.** There is no
-placeholder whitelist: empty, `N/A`, `待定`, a typo (`1OO`), `0` and negative
+**A `price` cell that is not a positive integer renders as `-`.** There is no
+placeholder whitelist: empty, `N/A`, `TBD`, a typo (`1OO`), `0` and negative
 numbers all mean "price not published". The card keeps the `CNY` prefix and the
-unit suffix and only the number becomes `-` (`CNY - / 张`), so the layout stays
+unit suffix and only the number becomes `-` (`CNY - / shot`), so the layout stays
 identical to the numeric tiers. `-` is not `0` and not "free"; mixing such cells
 with numeric rows in one file is fine.
 
@@ -385,11 +409,11 @@ The rest of the contract is:
   of tiers is not fixed (adding a 12-shot row needs no code change)
 - a convention tier gets a unit suffix only if it is listed in
   `CONVENTION_UNIT_KEYS`; unlisted tiers render the bare price
-- outdoor rows must cover all four `类型/人数` combinations; they render in a
+- outdoor rows must cover all four `type/people` combinations; they render in a
   fixed order (studio solo/duo, then outdoor solo/duo) regardless of row order
 
 A missing file, wrong column, duplicate tier, unknown tier or unrecognized
-`是否接单` value **fails the build** — a wrong price list is worse than a failed
+`bookable` value **fails the build** — a wrong price list is worse than a failed
 build. The price cell alone never fails the build: anything that is not a
 positive integer renders as `-`.
 `tests/test_services_pricing.py` covers all of these cases plus a round-trip
@@ -407,8 +431,9 @@ published to docs.limooo.cn.
   `stale-while-revalidate`; `public/_routes.json` and `_headers` are both
   generated by `src/build.py`.
 - Verified public HTML is cached by language in the Pages Cache API for 300
-  seconds, and responses advertise `public, s-maxage=300` with
-  `Vary: Accept-Language`.
+  seconds, and responses advertise
+  `public, max-age=300, s-maxage=300, stale-while-revalidate=3600` with
+  `Vary: Accept-Language, Cookie` (the language cookie is part of the cache key).
 - First-party portfolio thumbnails and favicons use
   `images.limooo.cn/static/...` (static edge cache, bypasses Functions)
   instead of the watermark Worker; QR codes and externally hotlinked images
@@ -424,25 +449,20 @@ published to docs.limooo.cn.
 
 ### Production status
 
-All of the following is live:
+The shape of the live deployment, re-read any time with
+`python3 ops/readme_facts.py --live`:
 
-1. Pages project (`limooo`, `limooo.pages.dev`) and D1 database (`limooo`, APAC) created; D1 binding `DB` attached to the project
-2. Migrations `001`–`015` applied; `ops/out/apple-account.sql` (5 rows) was imported; the 1255-row `blocklist.sql` snapshot exists, but the user decided not to restore it, so production `blocked_ips` stays at 0 and is rebuilt only from new evidence
-3. Secrets configured under **Pages → Settings → Environment variables → Encrypt**: `TURNSTILE_SITEKEY` / `TURNSTILE_SECRET` (Turnstile widget in Managed mode; the domain list covers every host that renders it — the `limooo.cn` gate subdomains incl. `auth`, `status`, `visitor`, `account` and `images`), `GATE_HMAC_KEY` / `SESSION_HMAC_KEY`, the `ACCESS_*` AUD mappings, `APPLE_ACCOUNT_ENCRYPTION_KEY` and `VISITOR_IP_KEY`
-4. Deployed to Pages and verified live: root path 403 gate page + `Cache-Control: no-store`, logo 200, `/__gate/verify` re-renders on failure, Location/IP/Ray ID diagnostics OK; forged cookies are rejected
-5. WAF custom rules live: `ip.src in $limooo_blocklist` → block
-6. **DNS**: `limooo.cn` / `www` / `services` / `contact` / `auth` / `visitor` / `account` / `images` / `redirect` → CNAME `limooo.pages.dev` (proxied), all custom domains active; `status.limooo.cn` is the `limooo-status` Worker and `image.limooo.cn` the watermark Worker, while `images.limooo.cn` is the static asset host; first-party pages reference `/static/...` paths (`https://images.limooo.cn/static/portfolio/thumbs/IMG_0203-800.webp`)
-7. The gate lives at `auth.limooo.cn` and renders in place: subdomains serve content directly with no `/zh-CN/` language prefix, and unverified requests keep the original host and path
-8. **visitor / apple / redirect run on Pages**: the visitor panel (analytics) and the Apple Account manager share the same Pages Functions (login / API / D1) with the main site; `redirect.limooo.cn` is a pure relay page **exempt from human verification** (to avoid a redirect loop after verification)
-9. **No server remains**: authentik, Uptime Kuma, nginx and the Flask runtime were retired with the VPS on 2026-09-17; probes, the status page, alerting and D1 retention are handled by `ops/status-worker`
+1. **Pages**: project `limooo` (`limooo.pages.dev`) serves `limooo.cn`, `www`, `services`, `contact`, `auth`, `visitor`, `account`, `identity`, `images` and `redirect`; the docs site is the separate `limooo-docs` project behind `docs.limooo.cn`, and `fonts.limooo.cn` is backed by R2
+2. **D1**: database `limooo` (APAC) is bound to the project as `DB`; the schema from `ops/migrations/` is present and `schema_version` tracks the applied versions; `apple_accounts` holds the Apple Account rows, and `blocked_ips` is the blocking authority (83 rows, 1 active — soft-deleted rows stay for audit)
+3. **Secrets** live under **Pages → Settings → Environment variables → Encrypt**: the Turnstile pair, `GATE_HMAC_KEY`, `SESSION_HMAC_KEY`, `OBSERVABILITY_HMAC_KEY`, `VISITOR_IP_KEY`, `APPLE_ACCOUNT_ENCRYPTION_KEY` and the `ACCESS_*` bindings; `APPLEID_ENCRYPTION_KEY` and the two `AUTHENTIK_*` entries are leftovers that no runtime reads
+4. **Access** fronts `visitor.limooo.cn`, `account.limooo.cn` and `admin.limooo.cn` as self-hosted applications; there is no self-hosted IdP and no custom login form
+5. **Workers** run standalone: `limooo-status`, `limooo-blocklist-sync`, `limooo-d1-archive` and `image-watermark`; `status.limooo.cn` and `sink.limooo.cn` are Worker custom domains
+6. **Cloudflare rules**: the custom-firewall phase is empty (the `limooo_blocklist` IP List is ready for a rule); the cache phase serves static assets, legacy image paths and watermark-Worker responses for a year while both HTML page-cache rules are disabled; the dynamic-redirect phase is empty, and `ops/waf/rules.snapshot.json` keeps the historical WAF rule set for rebuilds
+7. **Smoke checks**: `https://limooo.cn/_health` → 200, `https://limooo.cn/?challenge=1` → 403, `https://docs.limooo.cn/` and `https://status.limooo.cn/` → 200
 
-Production state (2026-09-26):
-
-- Migrations verified present on production D1, including `007` indexes, `011` read-reduction rollups and `014` visitor IP encryption.
-- Access is the only identity source; no self-hosted IdP and no custom login page.
-- The gate renders in place on every host, and the gate page/logs show the real visitor IP.
-- The historical 1255-entry blocklist is **not** restored; backup remains archive only.
+The gate renders in place on every host, the real visitor IP is shown in the gate page
+and logs, and Access remains the only identity source.
 
 ## License
 
-[GNU AGPL v3.0](LICENSE.md)|[GNU AGPL v3.0-简体中文](LICENSE_zh_CN.md)|[GNU AGPL v3.0-日本語](LICENSE_ja_JP.md)|[GNU AGPL v3.0-한국어](LICENSE_ko_KR.md)
+[GNU AGPL v3.0](LICENSE.md)|[GNU AGPL v3.0 (Simplified Chinese)](LICENSE_zh_CN.md)|[GNU AGPL v3.0 (Japanese)](LICENSE_ja_JP.md)|[GNU AGPL v3.0 (Korean)](LICENSE_ko_KR.md)

@@ -137,7 +137,7 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>. #}
 
         <div class="extras">
             <p class="extras-title" data-i18n="notes_label">{{ _('notes_label') }}</p>
-            {# 这一行跟着 outdoor.csv 的「是否接单」走：整类都不接就显示暂停文案 #}
+            {# 这一行跟着 outdoor.csv 的 `bookable` 走：整类都不接就显示暂停文案 #}
             <div class="extra-row"><span data-i18n="{{ pricing.outdoor_note.title_key }}">{{ _(pricing.outdoor_note.title_key) }}</span><span data-i18n="{{ pricing.outdoor_note.value_key }}">{{ _(pricing.outdoor_note.value_key) }}</span></div>
             <div class="extra-row"><span data-i18n="extra_deposit">{{ _('extra_deposit') }}</span><span data-i18n="deposit_mixed">{{ _('deposit_mixed') }}</span></div>
             <div class="extra-row"><span data-i18n="extra_negatives">{{ _('extra_negatives') }}</span><span data-i18n="negatives_all">{{ _('negatives_all') }}</span></div>

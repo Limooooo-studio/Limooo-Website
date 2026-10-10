@@ -200,6 +200,8 @@ if [ "$RUN_PY" = 1 ]; then
     echo "[ci] python job"
     echo "[ci] python -m pytest"
     (cd "$TARGET" && "$PYTHON_BIN" -m pytest -q)
+    echo "[ci] python ops/readme_facts.py --check"
+    (cd "$TARGET" && "$PYTHON_BIN" ops/readme_facts.py --check)
 fi
 
 echo "[ci] OK: CI will pass."

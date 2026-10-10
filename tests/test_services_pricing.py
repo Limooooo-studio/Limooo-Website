@@ -27,11 +27,11 @@ def services_dir(tmp_path, monkeypatch):
 
 
 def test_load_pricing_reads_both_csv(services_dir):
-    _write(services_dir, CONVENTION_CSV, "张数,价格\n1,20\n3,55\n6,100\n9,150\n")
+    _write(services_dir, CONVENTION_CSV, "shots,price\n1,20\n3,55\n6,100\n9,150\n")
     _write(
         services_dir,
         OUTDOOR_CSV,
-        "类型,人数,价格\n棚拍,单人,100\n棚拍,双人,150\n外景,单人,120\n外景,双人,180\n",
+        "type,people,price\nstudio,solo,100\nstudio,duo,150\noutdoor,solo,120\noutdoor,duo,180\n",
     )
 
     pricing = load_pricing()
@@ -53,11 +53,11 @@ def test_load_pricing_reads_both_csv(services_dir):
 
 
 def test_convention_rows_are_sorted_by_shot_count(services_dir):
-    _write(services_dir, CONVENTION_CSV, "张数,价格\n9,150\n1,20\n6,100\n3,55\n")
+    _write(services_dir, CONVENTION_CSV, "shots,price\n9,150\n1,20\n6,100\n3,55\n")
     _write(
         services_dir,
         OUTDOOR_CSV,
-        "类型,人数,价格\n棚拍,单人,100\n棚拍,双人,150\n外景,单人,120\n外景,双人,180\n",
+        "type,people,price\nstudio,solo,100\nstudio,duo,150\noutdoor,solo,120\noutdoor,duo,180\n",
     )
 
     pricing = load_pricing()
@@ -67,11 +67,11 @@ def test_convention_rows_are_sorted_by_shot_count(services_dir):
 
 def test_outdoor_rows_are_rendered_in_fixed_order(services_dir):
     """CSV 行序变化不应打乱四张卡片的版式（棚拍在前、外景在后）。"""
-    _write(services_dir, CONVENTION_CSV, "张数,价格\n1,20\n3,55\n6,100\n9,150\n")
+    _write(services_dir, CONVENTION_CSV, "shots,price\n1,20\n3,55\n6,100\n9,150\n")
     _write(
         services_dir,
         OUTDOOR_CSV,
-        "类型,人数,价格\n外景,双人,180\n棚拍,单人,100\n外景,单人,120\n棚拍,双人,150\n",
+        "type,people,price\noutdoor,duo,180\nstudio,solo,100\noutdoor,solo,120\nstudio,duo,150\n",
     )
 
     pricing = load_pricing()
@@ -82,15 +82,15 @@ def test_outdoor_rows_are_rendered_in_fixed_order(services_dir):
 @pytest.mark.parametrize(
     "bookable,expected",
     [
-        ("是", [False, False, False, False]),
-        ("否", [True, True, True, True]),
+        ("yes", [False, False, False, False]),
+        ("no", [True, True, True, True]),
         ("", [False, False, False, False]),
         (None, [False, False, False, False]),
     ],
 )
 def test_bookable_column_drives_the_strikethrough(services_dir, bookable, expected):
-    """「是否接单」= 否 加删除线；= 是 或留空（含整列不存在）都不加。"""
-    column = "" if bookable is None else f",是否接单"
+    """`bookable` = no 加删除线；= yes 或留空（含整列不存在）都不加。"""
+    column = "" if bookable is None else f",bookable"
     cells = [bookable] * 4 if bookable is not None else [None] * 4
 
     def row(kind, who, price, cell):
@@ -100,7 +100,7 @@ def test_bookable_column_drives_the_strikethrough(services_dir, bookable, expect
     _write(
         services_dir,
         CONVENTION_CSV,
-        "张数,价格" + column + "\n"
+        "shots,price" + column + "\n"
         + "\n".join(
             f"{shots},{price}" + ("" if bookable is None else f",{bookable}")
             for shots, price in ((1, 20), (3, 55), (6, 100), (9, 150))
@@ -110,15 +110,15 @@ def test_bookable_column_drives_the_strikethrough(services_dir, bookable, expect
     _write(
         services_dir,
         OUTDOOR_CSV,
-        "类型,人数,价格" + column + "\n"
+        "type,people,price" + column + "\n"
         + "\n".join(
             row(kind, who, price, cells[i])
             for i, (kind, who, price) in enumerate(
                 (
-                    ("棚拍", "单人", 100),
-                    ("棚拍", "双人", 150),
-                    ("外景", "单人", 120),
-                    ("外景", "双人", 180),
+                    ("studio", "solo", 100),
+                    ("studio", "duo", 150),
+                    ("outdoor", "solo", 120),
+                    ("outdoor", "duo", 180),
                 )
             )
         )
@@ -135,22 +135,22 @@ def test_bookable_column_drives_the_strikethrough(services_dir, bookable, expect
     "studio,expected",
     [
         # 两档棚拍都不接 → 说明栏显示暂停文案
-        (("否", "否"), "studio_paused"),
+        (("no", "no"), "studio_paused"),
         # 只要有一档还接单 → 说明栏显示可预约，不能和卡片上的删除线自相矛盾
-        (("是", "是"), "studio_bookable"),
-        (("是", "否"), "studio_bookable"),
+        (("yes", "yes"), "studio_bookable"),
+        (("yes", "no"), "studio_bookable"),
         # 留空同样算接单
         (("", ""), "studio_bookable"),
     ],
 )
 def test_studio_note_row_follows_the_bookable_column(services_dir, studio, expected):
-    _write(services_dir, CONVENTION_CSV, "张数,价格\n1,20\n3,55\n6,100\n9,150\n")
+    _write(services_dir, CONVENTION_CSV, "shots,price\n1,20\n3,55\n6,100\n9,150\n")
     _write(
         services_dir,
         OUTDOOR_CSV,
-        "类型,人数,价格,是否接单\n"
-        f"棚拍,单人,100,{studio[0]}\n棚拍,双人,150,{studio[1]}\n"
-        "外景,单人,120,是\n外景,双人,180,是\n",
+        "type,people,price,bookable\n"
+        f"studio,solo,100,{studio[0]}\nstudio,duo,150,{studio[1]}\n"
+        "outdoor,solo,120,yes\noutdoor,duo,180,yes\n",
     )
 
     pricing = load_pricing()
@@ -163,12 +163,12 @@ def test_studio_note_row_follows_the_bookable_column(services_dir, studio, expec
 
 def test_studio_note_row_is_rendered(services_dir):
     """说明栏那一行必须由模板渲染出来；棚拍全不接时显示暂停文案。"""
-    _write(services_dir, CONVENTION_CSV, "张数,价格\n1,20\n3,55\n6,100\n9,150\n")
+    _write(services_dir, CONVENTION_CSV, "shots,price\n1,20\n3,55\n6,100\n9,150\n")
     _write(
         services_dir,
         OUTDOOR_CSV,
-        "类型,人数,价格,是否接单\n"
-        "棚拍,单人,100,否\n棚拍,双人,150,否\n外景,单人,120,是\n外景,双人,180,是\n",
+        "type,people,price,bookable\n"
+        "studio,solo,100,no\nstudio,duo,150,no\noutdoor,solo,120,yes\noutdoor,duo,180,yes\n",
     )
 
     html = build.render_page(RENDER_APP, "services.html", "/services", "zh-cn")
@@ -179,24 +179,24 @@ def test_studio_note_row_is_rendered(services_dir):
 
 
 def test_invalid_bookable_value_fails_the_build(services_dir):
-    _write(services_dir, CONVENTION_CSV, "张数,价格,是否接单\n1,20,maybe\n3,55,是\n6,100,是\n9,150,是\n")
+    _write(services_dir, CONVENTION_CSV, "shots,price,bookable\n1,20,maybe\n3,55,yes\n6,100,yes\n9,150,yes\n")
     _write(
         services_dir,
         OUTDOOR_CSV,
-        "类型,人数,价格,是否接单\n棚拍,单人,100,是\n棚拍,双人,150,是\n外景,单人,120,是\n外景,双人,180,是\n",
+        "type,people,price,bookable\nstudio,solo,100,yes\nstudio,duo,150,yes\noutdoor,solo,120,yes\noutdoor,duo,180,yes\n",
     )
 
     with pytest.raises(RuntimeError) as excinfo:
         load_pricing()
 
-    assert "是否接单" in str(excinfo.value) and "无法识别" in str(excinfo.value)
+    assert "bookable" in str(excinfo.value) and "unrecognized" in str(excinfo.value)
 
 
 @pytest.mark.parametrize(
     "convention,outdoor,message",
     [
-        ("张数,价格\n1,20\n3,55\n6,100\n9,150\n", "类型,人数,价格\n棚拍,单人,100\n", "缺少档位"),
-        ("张数\n1\n3\n6\n9\n", None, "缺少列"),
+        ("shots,price\n1,20\n3,55\n6,100\n9,150\n", "type,people,price\nstudio,solo,100\n", "missing tier"),
+        ("shots\n1\n3\n6\n9\n", None, "missing column"),
     ],
 )
 def test_invalid_csv_fails_the_build(services_dir, convention, outdoor, message):
@@ -214,17 +214,17 @@ def test_missing_csv_fails_the_build(services_dir):
     with pytest.raises(RuntimeError) as excinfo:
         load_pricing()
 
-    assert "无法读取价目表" in str(excinfo.value)
+    assert "cannot read price list" in str(excinfo.value)
 
 
 def test_services_page_renders_csv_prices(services_dir):
     """模板里的价格必须来自 CSV，而不是写死的常量。"""
-    _write(services_dir, CONVENTION_CSV, "张数,价格\n1,30\n3,60\n6,110\n9,160\n")
+    _write(services_dir, CONVENTION_CSV, "shots,price\n1,30\n3,60\n6,110\n9,160\n")
     _write(
         services_dir,
         OUTDOOR_CSV,
-        "类型,人数,价格,是否接单\n"
-        "棚拍,单人,110,否\n棚拍,双人,160,否\n外景,单人,130,是\n外景,双人,190,\n",
+        "type,people,price,bookable\n"
+        "studio,solo,110,no\nstudio,duo,160,no\noutdoor,solo,130,yes\noutdoor,duo,190,\n",
     )
     html = build.render_page(RENDER_APP, "services.html", "/services", "zh-cn")
 
@@ -247,20 +247,20 @@ def test_services_page_renders_csv_prices(services_dir):
 
 @pytest.mark.parametrize(
     "literal",
-    ["N/A", "n/a", "NA", " N/A ", "待定", "", "1OO", "0", "-5", "12.5"],
+    ["N/A", "n/a", "NA", " N/A ", "TBD", "", "1OO", "0", "-5", "12.5"],
 )
 def test_non_positive_integer_price_renders_dash(services_dir, literal):
     """价格没有白名单：解析不出正整数（N/A / 留空 / 写错 / 0 / 负数）→ no_price，构建照常通过。"""
     _write(
         services_dir,
         CONVENTION_CSV,
-        f"张数,价格\n1,{literal}\n3,55\n6,100\n9,150\n",
+        f"shots,price\n1,{literal}\n3,55\n6,100\n9,150\n",
     )
     _write(
         services_dir,
         OUTDOOR_CSV,
-        "类型,人数,价格\n"
-        f"棚拍,单人,{literal}\n棚拍,双人,150\n外景,单人,120\n外景,双人,180\n",
+        "type,people,price\n"
+        f"studio,solo,{literal}\nstudio,duo,150\noutdoor,solo,120\noutdoor,duo,180\n",
     )
 
     pricing = load_pricing()
@@ -280,11 +280,11 @@ def test_non_positive_integer_price_renders_dash(services_dir, literal):
 
 def test_no_price_renders_as_dash(services_dir):
     """没有价格只把数字换成 '-'：CNY 前缀与单位后缀留在原位，同页其他档位照旧。"""
-    _write(services_dir, CONVENTION_CSV, "张数,价格\n1,N/A\n3,55\n6,100\n9,150\n")
+    _write(services_dir, CONVENTION_CSV, "shots,price\n1,N/A\n3,55\n6,100\n9,150\n")
     _write(
         services_dir,
         OUTDOOR_CSV,
-        "类型,人数,价格\n棚拍,单人,待定\n棚拍,双人,150\n外景,单人,120\n外景,双人,0\n",
+        "type,people,price\nstudio,solo,TBD\nstudio,duo,150\noutdoor,solo,120\noutdoor,duo,0\n",
     )
 
     html = build.render_page(RENDER_APP, "services.html", "/services", "zh-cn")
@@ -298,7 +298,7 @@ def test_no_price_renders_as_dash(services_dir):
         == 2
     )
     assert "N/A" not in html
-    assert "待定" not in html
+    assert "TBD" not in html
     assert "CNY None" not in html
     assert re.findall(r'<span class="price-num">CNY (\d+)', html) == [
         "55",
@@ -313,7 +313,7 @@ def test_services_page_matches_committed_csv():
     """仓库里真实的 CSV 必须能渲染（防止只改 CSV 改坏格式就提交/部署）。"""
     pricing = load_pricing()
 
-    assert pricing["convention"], "convention.csv 至少要有一档"
+    assert pricing["convention"], "convention.csv must have at least one tier"
     assert len(pricing["outdoor"]) == 4
     # 张数升序且不重复
     shots = [plan["shots"] for plan in pricing["convention"]]

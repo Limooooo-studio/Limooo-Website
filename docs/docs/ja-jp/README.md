@@ -33,6 +33,7 @@ description: "Limooo のウェブサイトと管理システム（Cloudflare 完
 | 人間検証 | Cloudflare Turnstile、ゲートページをその場でレンダリング | Cloudflare + ブラウザ |
 | 認証 | Cloudflare Access（Zero Trust JWT、Worker が自ら検証） | Cloudflare |
 | 監視とデータ保持 | `ops/status-worker`（Cron Triggers + Durable Object alarms） | Cloudflare Workers |
+| D1 アーカイブ | `ops/d1-archive`（毎日の cron） | Cloudflare Workers |
 | ブロックリスト同期 | `ops/sync-worker`（日次 cron → Cloudflare IP List） | Cloudflare Workers |
 | 画像ウォーターマーク | `ops/image-watermark`（パスを正規化するプロキシ） | Cloudflare Workers |
 | 静的アセット／原本バックアップ | Pages アセットサーバー + プライベート R2 バケット `limooo-originals` | Cloudflare |
@@ -43,8 +44,11 @@ description: "Limooo のウェブサイトと管理システム（Cloudflare 完
 ```
 ├── src/
 │   ├── config.py          # unified config: paths, languages, domains, DB/IP utils (consumes config-contract.json)
-│   ├── auto_block.py      # legacy log scan + blocklist → D1 sync (no origin host to scan any more; kept for reference)
+│   ├── auto_block.py      # manual blocklist.txt → D1 reconciliation (D1 is the authority)
+│   ├── cidr.py            # CIDR parsing helpers
+│   ├── portfolio.py       # portfolio image / thumbnail helpers
 │   ├── render_app.py      # build-time read-only renderer used by src/build.py
+│   ├── services_pricing.py        # CSV-driven price list for services.limooo.cn
 │   ├── build.py           # Pages static build (python3 src/build.py)
 │   ├── static/            # static css/js/fonts + icons/portfolio/QR codes
 │   └── templates/         # Jinja2 page templates
@@ -52,8 +56,7 @@ description: "Limooo のウェブサイトと管理システム（Cloudflare 完
 ├── LICENSE.md             # AGPL-3.0
 ├── data/                  # runtime data (generated; git-ignored except blocklist.txt / whitelist.txt)
 │   ├── blocklist.txt      # auditable snapshot of D1 blocked_ips (D1 is the sole authority)
-│   ├── whitelist.txt      # trusted ASNs (low-risk) + fully allowed IPs/CIDRs
-│   └── gate_trust.json    # generated gate trust config
+│   └── whitelist.txt      # trusted ASNs (low-risk) + fully allowed IPs/CIDRs
 ├── secrets/               # secrets & certificates, git-ignored
 │   ├── webauthn.env       # env file read by the deploy scripts
 │   └── apple_account_encryption.key     # Apple Account password encryption key
@@ -64,15 +67,26 @@ description: "Limooo のウェブサイトと管理システム（Cloudflare 完
 │   ├── docs_deploy.sh     # docs.limooo.cn build + deploy (VitePress → Pages project limooo-docs)
 │   ├── docs_headers.py    # generates the docs site `_headers` (CSP hashes + cache)
 │   ├── ci_check.sh        # local replica of .github/workflows/tests.yml
-│   ├── security-headers.json      # single source of the response-header baseline
-│   ├── check_config_contract.py / check_gate_trust.py / check_security_headers.py
-│   ├── migrations/        # D1 schema migrations
+│   ├── run-tests.sh       # test runner used locally
+│   ├── install_git_hooks.sh       # installs the pre-push hook
+│   ├── readme_facts.py    # re-reads the facts on this page (--check / --live)
+│   ├── migrate_d1.sh      # D1 migrations (--dry-run / --remote)
+│   ├── workers_deploy.sh  # standalone Worker deploys
 │   ├── export_d1.py       # unified D1 import SQL/JSON export (apple-account | blocklist)
-│   ├── prune_d1.py        # legacy D1 retention script (live retention now runs in status-worker)
+│   ├── prune_d1.py        # manual D1 retention and aggregation (scheduled retention runs in status-worker)
+│   ├── d1_client.py       # Cloudflare API client for D1
 │   ├── upload_originals.sh        # private R2 backup of portfolio originals
+│   ├── security-headers.json      # single source of the response-header baseline
+│   ├── tailwind.config.js # Tailwind config for the prebuilt CSS
+│   ├── check_config_contract.py / check_gate_trust.py / check_security_headers.py / check_ip_rays.py / check_ray_id.py / check_visitor_id.py
+│   ├── migrations/        # D1 schema migrations
+│   ├── waf/               # WAF rule snapshots
+│   ├── cloudflare/        # Cloudflare resource inventory (declarative)
+│   ├── email-templates/   # transactional email framework + i18n copy
+│   ├── fonts/             # gate-diagnostic font subset
 │   ├── status-worker/     # Worker: probes, status page, alerting, D1 retention
 │   ├── image-watermark/   # Worker: image.limooo.cn watermark normalizer
-│   ├── d1-archive/        # D1 snapshot/archive Worker
+│   ├── d1-archive/        # Worker: D1 snapshot/archive (cron 00:00)
 │   ├── sync-worker/       # Worker: D1 blocked_ips → Cloudflare IP List (cron 03:30)
 │   └── requirements.txt   # Python dependencies
 ├── functions/             # Cloudflare Pages Functions
@@ -134,8 +148,8 @@ bash ops/pages_deploy.sh
 bash ops/deploy.sh --all
 ```
 
-**ゼロ VPS スクリプト（2026-09-17 に書き直し）**：`ops/deploy.sh` が唯一のデプロイ入口です（旧 `ops/upload.sh` の転送用スクリプトはこれに統合されました —
- スクリプトが 1 つなので、並行する複製が乖離することはありません）。
+**デプロイ入口**：`ops/deploy.sh` が唯一のデプロイ入口です — commit + push +
+Pages + docs を実行し、`--worker=<name>` で単一の Worker も配布できます。
 `ops/pages_deploy.sh` がビルド + Pages を担当します。
 `--dry-run` はどのリモートにも書き込まずに計画を出力します。
 
@@ -172,22 +186,28 @@ npm test
 
 ## Cron ジョブ
 
-VPS の crontab はもうありません（2026-09-17 に廃止）。スケジューリングはすべて Cloudflare 上にあり、
-各 Worker の `wrangler.toml` で宣言された Worker Cron Triggers として動作します：
+スケジューリングはすべて Cloudflare 上にあり、各 Worker の `wrangler.toml` で
+宣言された Worker Cron Triggers として動作します：
 
 | スケジュール | Worker | ジョブ |
 | --- | --- | --- |
 | `* * * * *` | `ops/status-worker` | 毎分の HTTP/D1 プローブ。プローブがダウンしている間は Durable Object のアラームが 10 秒ごとに再確認し、状態変化時にアラートします |
-| `47 3 * * *` | `ops/status-worker` | D1 のデータ保持（`src/retention.ts`）：`ray_log_v2`（7 日）、`visitors_v2` / `visitor_rollups`（30 日）、`events` / `heartbeats` / `probe_uptime_daily`（90 日）を削除します |
-| `30 3 * * *` | `ops/sync-worker` | 有効な D1 `blocked_ips` の行を Cloudflare IP List に反映します |
+| `47 3 * * *` | `ops/status-worker` | D1 のデータ保持（`src/retention.ts`）：`ray_log_v2`（7 日）、`visitors_v2`（30 日）、`visitor_rollups`（30 日）、`heartbeats`（30 日）、`events`（90 日）、`probe_uptime_daily`（90 日）を削除します |
+| `30 3 * * *` | `ops/sync-worker` | 有効な D1 `blocked_ips` の行を Cloudflare IP List `limooo_blocklist` に反映します |
+| `0 0 * * *` | `ops/d1-archive` | D1 のスナップショット／アーカイブ |
 
-TLS 証明書は Cloudflare が Pages のカスタムドメイン向けに発行・更新するため、
-`acme.sh` もなくなりました。`ops/migrate_d1.sh` と `ops/workers_deploy.sh` は手動実行用で、
+`python3 ops/readme_facts.py --check` は上記のスケジュール、保持期間、TTL、ディレクトリツリーを
+リポジトリから読み直し、このページと食い違えば失敗します。`--live` はデプロイ済みの状態
+（D1 の件数、Pages のホストとシークレット、DNS、WAF、Worker のスケジュール）を Cloudflare
+から読みます。
+
+TLS 証明書は Cloudflare が Pages のカスタムドメイン向けに発行・更新します。
+`ops/migrate_d1.sh` と `ops/workers_deploy.sh` は手動実行用で、
 `--dry-run` に対応したメンテナンスの入口です。
 
 ## デプロイ
 
-デプロイ先のサーバーはありません。対象は Cloudflare Pages（`limooo`）と独立した Workers です。
+デプロイ対象は Cloudflare Pages（`limooo`）と独立した Workers で、すべて Cloudflare API 経由です。
 リポジトリのルートから：
 
 ```bash
@@ -207,8 +227,8 @@ bash ops/deploy.sh --all --full             # same, but stream every step's outp
 出力は既定で静かです（1 ステップにつきステータス 1 行）。`--full` を付けると全工程を確認できます。
 `--dry-run` は上記のフラグのどの組み合わせでも動作します。
 
-認証情報はローカルの `secrets/webauthn.env` から読み込みます。ssh、rsync、
-systemd、Nginx のステップはありません。
+認証情報はローカルの `secrets/webauthn.env` から読み込みます。すべてのステップは
+Cloudflare API か Git 経由で実行されます。
 
 ### ドキュメントサイト（docs.limooo.cn）
 
@@ -249,10 +269,12 @@ bash ops/docs_deploy.sh --dev          # local VitePress dev server
 - `__gate` cookie は `<unix-expiry>.<HMAC-SHA256 hex>` です（TTL 1 時間、`HttpOnly`、
   `Domain=.limooo.cn`）。発行と検証はすべてエッジで行います。
 - アイデンティティは Cloudflare Access から得ます。Worker が
-   `Cf-Access-Jwt-Assertion` を自ら検証し（RS256、JWKS は 1 時間キャッシュ）、AUD → ロールにマッピングします。
-  自前の IdP も独自のログインフォームもありません。
+   `Cf-Access-Jwt-Assertion` を自ら検証し（RS256、JWKS は 1 時間キャッシュ）、AUD → ロールにマッピングするため、
+  Access が唯一のログイン窓口です。
 - 鍵と暗号文は別々に保管し、リポジトリには決してコミットしません
-- ブロックの層：アプリ層の 403 / Worker → エッジの Cloudflare WAF + IP List
+- ブロックの層：アプリ層の D1 ブロックリストがエッジで 403 を返し、`ops/sync-worker` が
+  有効な行を Cloudflare IP List `limooo_blocklist` に追随させます（WAF ルールが使う想定ですが、
+  そのカスタムルールは現在デプロイされていません）
 - 管理操作（作成／更新／削除）には admin ロールが必要で、viewer は読み取り専用です
 - 訪問者の IP を一覧系 API が返すことはありません。完全な IP は `visitor_rollups.ip_enc` に
    Fernet で暗号化して保存し、admin 向けに 1 行ずつ復号します
@@ -263,15 +285,15 @@ bash ops/docs_deploy.sh --dev          # local VitePress dev server
 
 | エントリ | 効果 |
 | --- | --- |
-| `ASN/<number>` | 低リスクのソース（中国電信／中国移動／中国聯通、鉄通とバックボーン AS9929 を含む）。Turnstile ゲートの代わりに Cloudflare の Non-Interactive Challenge（`js_challenge`）が適用されます。 |
+| `ASN/<number>` | 低リスクのソース（中国電信／中国移動／中国聯通、鉄通とバックボーン AS9929 を含む）。Turnstile ゲートの代わりに Cloudflare の非対話型チャレンジ（`js_challenge`）を返す想定ですが、その WAF ルールは現在デプロイされていません（下記参照）。 |
 | `IP-CIDR/<ip>/<mask>` | 完全に許可されたソース（例：`IP-CIDR/97.64.18.11/32`）。ブロックリストとチャレンジゲートの両方をスキップします。 |
 
-ASN リストは [china-mainland-asn](https://github.com/xingpingcn/china-mainland-asn)（毎日更新）を出典とし、WAF の低リスク `js_challenge` ルールに反映しています。許可 IP は `ops/check_gate_trust.py` を通じて `functions/_data/gateTrust.ts` に、そして Cloudflare WAF の skip ルールに反映されます。
+ASN リストは [china-mainland-asn](https://github.com/xingpingcn/china-mainland-asn)（毎日更新）から取得します。生成されたエッジ側のコピーは現在 **320 件の低リスク ASN** と **2 件の完全許可 IP** を含みます。現時点でこれを参照する WAF カスタムルールはありません（ゾーンの `http_request_firewall_custom` フェーズは空で、`ops/waf/rules.snapshot.json` は再構築用に歴史的な `js_challenge` ルールを保持しています）。
 
-ランタイムごとの信頼：エッジのコードが信頼済みとして扱うのは `IP-CIDR` エントリだけです
-（`isGateTrustedIp` → `functions/_data/gateTrust.ts`）。`ASN/` の行は Cloudflare WAF の
- `js_challenge` ルールに反映されます。`data/whitelist.txt` を編集したら、ビルドでエッジ側のコピーを再生成してください
-（`bash ops/build.sh`。これは `ops/check_gate_trust.py --emit` を実行します）。
+ランタイムごとの信頼範囲：エッジのコードが信頼するのは `IP-CIDR` のエントリだけです
+（`isGateTrustedIp` → `functions/_data/gateTrust.ts`）。`data/whitelist.txt` を編集したら、
+ビルドでエッジ側のコピーを再生成してください（`bash ops/build.sh` が
+`ops/check_gate_trust.py --emit` を実行します）。
 
 ## 唯一の情報源
 
@@ -306,7 +328,7 @@ ASN リストは [china-mainland-asn](https://github.com/xingpingcn/china-mainla
 - `ops/migrations/007_visitor_status_indexes.sql`：訪問者ステータスの絞り込み用に `(status, ts)` と `(status, ip_hash, ts)` インデックスを追加します
 - `ops/sync-worker/`：毎日 03:30 の Worker cron が有効な D1 `blocked_ips` の行を Cloudflare IP List に同期します。`auto_block.py cf` は明示的なメンテナンス専用です
 - 注記：Pages は `POST /logout/backchannel` を公開し、`sub` によって D1 `auth_sessions`
-   を失効させます。旧 Flask の `/logout/backchannel` はもうデプロイされていません。
+   を失効させます。
 
 ### 環境変数
 
@@ -320,6 +342,7 @@ ASN リストは [china-mainland-asn](https://github.com/xingpingcn/china-mainla
 | `ACCESS_TEAM_DOMAIN` | Cloudflare Access のチームドメイン。検証に使う JWT の `iss` でもあります |
 | `ACCESS_ADMIN_AUDS` / `ACCESS_VIEWER_AUDS` | admin / viewer ロールにマッピングする Access アプリケーションの AUD タグ（カンマ区切り、admin が優先） |
 | `VISITOR_IP_KEY` | 暗号化された訪問者 IP 完全版カラム（`visitor_rollups.ip_enc`）用の Fernet 鍵 |
+| `OBSERVABILITY_HMAC_KEY` | プライバシー最小化された訪問者 IP ハッシュの HMAC 鍵（`functions/_lib/tracking.ts`）。未設定だとゲートがフェイルクローズします |
 | `SESSION_HMAC_KEY` | Pages のセッション cookie 署名鍵（`GATE_HMAC_KEY` とは別） |
 | `APPLE_ACCOUNT_ENCRYPTION_KEY` | Fernet 鍵（`secrets/apple_account_encryption.key` から） |
 
@@ -327,9 +350,9 @@ ASN リストは [china-mainland-asn](https://github.com/xingpingcn/china-mainla
 
 ### ゲートの挙動
 
-すべてのリクエストで署名済み `__gate` cookie を確認します。Cloudflare の `botManagement.verifiedBot` は検証済み検索エンジンの信頼シグナルとして受理されますが、任意の `Googlebot`/`GPTBot` の User-Agent 文字列やクライアントが送ってきた `cf_clearance` cookie がゲートを迂回することはありません。低リスクの中国電信／移動／聯通の ASN は Cloudflare WAF の `js_challenge` 層で処理し、エッジのコードが完全なバイパスを信頼するのは生成されたホワイトリスト（`data/whitelist.txt` → `functions/_data/gateTrust.ts`）だけです。
+すべてのリクエストで署名済み `__gate` cookie を確認します。Cloudflare の `botManagement.verifiedBot` は検証済み検索エンジンの信頼シグナルとして受理されますが、任意の `Googlebot`/`GPTBot` の User-Agent 文字列やクライアントが送ってきた `cf_clearance` cookie がゲートを迂回することはありません。低リスクの中国電信／移動／聯通の ASN は WAF の `js_challenge` 層向けに登録されているだけで（そのルールは現在デプロイされていません）、エッジのコードが完全なバイパスを信頼するのは生成されたホワイトリスト（`data/whitelist.txt` → `functions/_data/gateTrust.ts`）だけです。
 
-未検証のリクエストには Turnstile ゲートページを**その場で**返します。ホストもパスも変わりません。ミドルウェアは要求された URL に `public/<lang>/auth.html` をステータス `403` でレンダリングし、`POST /__gate/verify` が同じオリジンで `Set-Cookie: __gate=…`（1 時間、`Domain=.limooo.cn`）を返し、その後ページが元のターゲットを再読み込みします。`auth.limooo.cn` はゲートのホストです — 自身のルートで同じページを配信し（404 もメインサイトへのリダイレクトもありません）、`/__gate/config|diag|verify` エンドポイントを持ちます — が、リダイレクト先ではなくなりました。
+未検証のリクエストには Turnstile ゲートページを**その場で**返します。ホストもパスも変わりません。ミドルウェアは要求された URL に `public/<lang>/auth.html` をステータス `403` でレンダリングし、`POST /__gate/verify` が同じオリジンで `Set-Cookie: __gate=…`（1 時間、`Domain=.limooo.cn`）を返し、その後ページが元のターゲットを再読み込みします。`auth.limooo.cn` はゲートのホストです — 自身のルートで同じページを配信し、`/__gate/config|diag|verify` エンドポイントを持ちます。
 
 ゲートをレンダリングするすべてのホストは同じエッジコードで配信されるため、同期させる 2 つ目のゲート実装はありません。
 
@@ -355,32 +378,32 @@ ASN リストは [china-mainland-asn](https://github.com/xingpingcn/china-mainla
 
 | ファイル | 列 | 埋める内容 |
 | --- | --- | --- |
-| `docs/services/convention.csv` | `张数,价格[,是否接单]` | 01 Convention、撮影枚数のティアごとにカード 1 枚 |
-| `docs/services/outdoor.csv` | `类型,人数,价格[,是否接单]` | 02 Outdoor、スタジオ／屋外 × 1 人／2 人 |
+| `docs/services/convention.csv` | `shots,price[,bookable]` | 01 Convention、撮影枚数のティアごとにカード 1 枚 |
+| `docs/services/outdoor.csv` | `type,people,price[,bookable]` | 02 Outdoor、スタジオ／屋外 × 1 人／2 人 |
 
 CSV から取得するのは数値、ティアの集合、受付可否だけです。ラベル、
 単位の接尾辞、注記ブロックは引き続き `locales/*.json` から取得します
 （`plan_studio_solo`、`unit_per_shot` など）。
 
-**`是否接单`（任意の列）** は、取り消し線付きの価格スタイルと
+**`bookable`（任意の列）** は、取り消し線付きの価格スタイルと
 注記ブロックのスタジオ行の両方を制御します：
 
-- ティアごと：`否` → そのティアの価格は
-   `class="plan-price strikethrough"` でレンダリングされます。`是`、空のセル、または列自体が
+- ティアごと：`no` → そのティアの価格は
+   `class="plan-price strikethrough"` でレンダリングされます。`yes`、空のセル、または列自体が
   存在しない → 通常の価格
-- 注記ブロック：**すべての** 棚拍ティアが `否` なら、スタジオ行は一時停止の文言
+- 注記ブロック：**すべての** `studio` ティアが `no` なら、スタジオ行は一時停止の文言
   （`studio_paused`）を表示します。予約可能なスタジオティアが 1 つでもあれば、代わりに
    `studio_bookable` を表示します
 
-つまり「一時的に受付停止」は端から端までデータです：`outdoor.csv` で 棚拍 を `否` から `是` に変えれば、
+つまり「一時的に受付停止」は端から端までデータです：`outdoor.csv` で `studio` を `no` から `yes` に変えれば、
 次のデプロイで取り消し線*と*一時停止の注記の両方が消え、
 テンプレートもロケールも編集する必要はありません。両者が食い違うことは決してありません。
 それ以外の値（例：`maybe`）は黙って推測せず、ビルドを失敗させます。
 
-**`价格` が正の整数でない場合は `-` としてレンダリングされます。** プレースホルダーの
-許可リストはありません。空欄、`N/A`、`待定`、打ち間違い（`1OO`）、`0`、負の数は
+**`price` が正の整数でない場合は `-` としてレンダリングされます。** プレースホルダーの
+許可リストはありません。空欄、`N/A`、`TBD`、打ち間違い（`1OO`）、`0`、負の数は
 いずれも「価格未公開」を意味します。カードは `CNY` プレフィックスと単位の接尾辞を
-保ったまま数値だけが `-` になります（`CNY - / 张`）。レイアウトは数値のティアと
+保ったまま数値だけが `-` になります（`CNY - / 枚`）。レイアウトは数値のティアと
 まったく同じです。`-` は `0` でも「無料」でもありません。1 つのファイルにこのような
 セルと数値の行を混在させても問題ありません。
 
@@ -390,10 +413,10 @@ CSV から取得するのは数値、ティアの集合、受付可否だけで�
   固定ではありません（12 枚の行を追加してもコード変更は不要）
 - convention のティアに単位の接尾辞が付くのは
    `CONVENTION_UNIT_KEYS` に登録されている場合だけです。未登録のティアは価格のみをレンダリングします
-- outdoor の行は 4 つの `类型/人数` の組み合わせをすべて網羅する必要があります。行の順序に関係なく
+- outdoor の行は 4 つの `type/people` の組み合わせをすべて網羅する必要があります。行の順序に関係なく
   固定の順序（スタジオ 1 人／2 人、次に屋外 1 人／2 人）でレンダリングされます
 
-ファイルの欠落、列の誤り、ティアの重複、未知のティア、認識できない `是否接单` の値は
+ファイルの欠落、列の誤り、ティアの重複、未知のティア、認識できない `bookable` の値は
 **ビルドを失敗させます** — 誤った価格表はビルドの失敗よりも悪いからです。価格セルだけは
 ビルドを失敗させません。正の整数として解釈できない内容はすべて `-` として
 レンダリングされます。
@@ -412,8 +435,8 @@ docs.limooo.cn に公開されることはありません。
    `stale-while-revalidate` 付きの長いブラウザキャッシュを与えます。`public/_routes.json` と `_headers` は
   どちらも `src/build.py` が生成します。
 - 検証済みの公開 HTML は Pages Cache API に言語ごとに 300
-   秒キャッシュされ、レスポンスは `public, s-maxage=300` と
-   `Vary: Accept-Language` を通知します。
+   秒キャッシュされ、レスポンスは `public, max-age=300, s-maxage=300, stale-while-revalidate=3600` と
+   `Vary: Accept-Language, Cookie` を通知します。
 - ファーストパーティのポートフォリオサムネイルと favicon は、
   ウォーターマーク Worker ではなく `images.limooo.cn/static/...`（静的エッジキャッシュ、Functions を迂回）
   を使用します。QR コードと外部から直リンクされた画像は
@@ -429,25 +452,17 @@ docs.limooo.cn に公開されることはありません。
 
 ### 本番の状態
 
-以下はすべて稼働中です：
+デプロイ済みの構成です。`python3 ops/readme_facts.py --live` でいつでも読み直せます：
 
-1. Pages プロジェクト（`limooo`、`limooo.pages.dev`）と D1 データベース（`limooo`、APAC）を作成済み。D1 バインディング `DB` をプロジェクトに接続済み
-2. マイグレーション `001`〜`015` を適用済み。`ops/out/apple-account.sql`（5 行）を取り込み済み。1255 行の `blocklist.sql` スナップショットは存在しますが、ユーザーが復元しないと判断したため、本番の `blocked_ips` は 0 のままで、新しい根拠からのみ再構築されます
-3. シークレットを **Pages → Settings → Environment variables → Encrypt** で設定済み：`TURNSTILE_SITEKEY` / `TURNSTILE_SECRET`（Turnstile ウィジェットは Managed モード。ドメイン一覧はそれをレンダリングするすべてのホスト — `limooo.cn` のゲート用サブドメイン、`auth`、`status`、`visitor`、`account`、`images` を含む — を網羅）、`GATE_HMAC_KEY` / `SESSION_HMAC_KEY`、`ACCESS_*` の AUD マッピング、`APPLE_ACCOUNT_ENCRYPTION_KEY`、`VISITOR_IP_KEY`
-4. Pages にデプロイして稼働確認済み：ルートパスは 403 のゲートページ + `Cache-Control: no-store`、ロゴは 200、`/__gate/verify` は失敗時に再レンダリング、Location/IP/Ray ID の診断は OK、偽造 cookie は拒否されます
-5. WAF カスタムルールが稼働中：`ip.src in $limooo_blocklist` → block
-6. **DNS**：`limooo.cn` / `www` / `services` / `contact` / `auth` / `visitor` / `account` / `images` / `redirect` → CNAME `limooo.pages.dev`（プロキシ済み）、すべてのカスタムドメインが有効。`status.limooo.cn` は `limooo-status` Worker、`image.limooo.cn` はウォーターマーク Worker で、`images.limooo.cn` は静的アセットホストです。ファーストパーティのページは `/static/...` パス（`https://images.limooo.cn/static/portfolio/thumbs/IMG_0203-800.webp`）を参照します
-7. ゲートは `auth.limooo.cn` にあり、その場でレンダリングします。サブドメインは `/zh-CN/` の言語プレフィックスなしで直接コンテンツを配信し、未検証のリクエストは元のホストとパスを保ちます
-8. **visitor / apple / redirect は Pages 上で動作**：ビジターパネル（分析）と Apple Account マネージャーはメインサイトと同じ Pages Functions（ログイン／API／D1）を共有します。`redirect.limooo.cn` は純粋な中継ページで、**人間検証の対象外**です（検証後のリダイレクトループを避けるため）
-9. **サーバーはもう残っていません**：authentik、Uptime Kuma、nginx、Flask ランタイムは 2026-09-17 に VPS とともに廃止されました。プローブ、ステータスページ、アラート、D1 のデータ保持は `ops/status-worker` が担当します
+1. **Pages**：プロジェクト `limooo`（`limooo.pages.dev`）が `limooo.cn`、`www`、`services`、`contact`、`auth`、`visitor`、`account`、`identity`、`images`、`redirect` を配信します。ドキュメントサイトは別プロジェクト `limooo-docs`（`docs.limooo.cn`）で、`fonts.limooo.cn` は R2 が支えます
+2. **D1**：データベース `limooo`（APAC）が `DB` としてプロジェクトに接続されています。`ops/migrations/` のスキーマは適用済みで、適用バージョンは `schema_version` が記録します。`apple_accounts` が Apple Account の行を保持し、`blocked_ips` がブロックの権威です（83 行、有効 1 行。ソフト削除した行は監査用に残ります）
+3. **シークレット**は **Pages → Settings → Environment variables → Encrypt** にあります：Turnstile の 2 つ、`GATE_HMAC_KEY`、`SESSION_HMAC_KEY`、`OBSERVABILITY_HMAC_KEY`、`VISITOR_IP_KEY`、`APPLE_ACCOUNT_ENCRYPTION_KEY`、`ACCESS_*` バインディング。`APPLEID_ENCRYPTION_KEY` と 2 つの `AUTHENTIK_*` はどのランタイムも読まない残骸です
+4. **Access** が `visitor.limooo.cn`、`account.limooo.cn`、`admin.limooo.cn` を self-hosted アプリとして前段で保護します。自前の IdP も独自のログインフォームもありません
+5. **Worker** は独立して動作します：`limooo-status`、`limooo-blocklist-sync`、`limooo-d1-archive`、`image-watermark`。`status.limooo.cn` と `sink.limooo.cn` は Worker のカスタムドメインです
+6. **Cloudflare のルール**：カスタムファイアウォールのフェーズは空です（`limooo_blocklist` IP List はルールを待っている状態）。キャッシュのフェーズでは静的アセット、旧画像パス、ウォーターマーク Worker の応答を 1 年間キャッシュし、2 つの HTML ページキャッシュルールは無効です。動的リダイレクトのフェーズは空で、`ops/waf/rules.snapshot.json` が再構築用に過去の WAF ルールセットを保持します
+7. **スモークチェック**：`https://limooo.cn/_health` → 200、`https://limooo.cn/?challenge=1` → 403、`https://docs.limooo.cn/` と `https://status.limooo.cn/` → 200
 
-本番の状態（2026-09-26）：
-
-- 本番 D1 にマイグレーションが存在することを確認済み（`007` のインデックス、`011` の読み取り削減ロールアップ、`014` の訪問者 IP 暗号化を含む）。
-- Access が唯一のアイデンティティ源です。自前の IdP も独自のログインページもありません。
-- ゲートはすべてのホストでその場でレンダリングされ、ゲートページ／ログには実際の訪問者 IP が表示されます。
-- 歴史的な 1255 件のブロックリストは**復元していません**。バックアップはアーカイブとしてのみ残ります。
-
+ゲートはどのホストでもその場でレンダリングされ、ゲートページとログに実際の訪問者 IP が表示され、Access が唯一のアイデンティティ源であり続けます。
 ## ライセンス
 
 [GNU AGPL v3.0](https://github.com/Limooooo-Studio/Limooo-Website/blob/main/LICENSE.md)|[GNU AGPL v3.0-簡体字中国語](https://github.com/Limooooo-Studio/Limooo-Website/blob/main/LICENSE_zh_CN.md)|[GNU AGPL v3.0-日本語](https://github.com/Limooooo-Studio/Limooo-Website/blob/main/LICENSE_ja_JP.md)|[GNU AGPL v3.0-韓国語](https://github.com/Limooooo-Studio/Limooo-Website/blob/main/LICENSE_ko_KR.md)
