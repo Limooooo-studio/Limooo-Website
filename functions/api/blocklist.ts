@@ -85,7 +85,7 @@ export const onRequestGet: PagesFunction<Env> = async (context) => {
 export const onRequestPost: PagesFunction<Env> = async (context) => {
   const auth = await adminSession(context.env, context.request);
   if (auth instanceof Response) return auth;
-  if (!(await verifyCsrf(context.env, context.request))) {
+  if (!(await verifyCsrf(context.env, context.request, auth.session.sid))) {
     return Response.json({ error: "csrf_invalid" }, { status: 403, headers: { "Cache-Control": "no-store" } });
   }
   const { session } = auth;
@@ -142,7 +142,7 @@ export const onRequestPost: PagesFunction<Env> = async (context) => {
 export const onRequestDelete: PagesFunction<Env> = async (context) => {
   const auth = await adminSession(context.env, context.request);
   if (auth instanceof Response) return auth;
-  if (!(await verifyCsrf(context.env, context.request))) {
+  if (!(await verifyCsrf(context.env, context.request, auth.session.sid))) {
     return Response.json({ error: "csrf_invalid" }, { status: 403, headers: { "Cache-Control": "no-store" } });
   }
   const { session } = auth;

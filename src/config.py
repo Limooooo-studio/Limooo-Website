@@ -178,6 +178,8 @@ CSRF_COOKIE = _contract_str("csrf_cookie")
 GATE_COOKIE_TTL = _contract_int("gate_ttl_seconds")
 SESSION_TTL = _contract_int("session_ttl_seconds")
 PENDING_TTL = _contract_int("pending_ttl_seconds")
+# 明文密码 reveal 要求的「近期认证」最大年龄（秒）；超时须重新登录。
+REVEAL_MAX_AUTH_AGE = _contract_int("reveal_max_auth_age_seconds")
 WHITELIST_FILE = _contract_str("whitelist_file")
 
 # ── Apple Account ──────────────────────────────────────────────

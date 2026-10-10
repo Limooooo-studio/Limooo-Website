@@ -1,17 +1,19 @@
 /** HMAC 会话 cookie + D1 会话撤销表单元测试 */
 
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Env } from "./env";
 import { execute, queryAll } from "./d1";
 import {
   ADMIN_REQUIRED_MESSAGE,
   AuthSessionUnavailableError,
+  REAUTH_REQUIRED_MESSAGE,
   configErrorResponse,
   createAuthSession,
   createSessionCookie,
   readSession,
   requireAdminSession,
   requireAuth,
+  requireRecentAdminSession,
   revokeAuthSession,
   runtimeConfigError,
 } from "./session";
@@ -203,5 +205,92 @@ describe("requireAdminSession", () => {
     const resp = (await requireAdminSession(env, await cookieFor("admin"))) as Response;
     expect(resp.status).toBe(503);
     expect(resp.headers.get("Cache-Control")).toBe("no-store");
+  });
+});
+
+/**
+ * requireRecentAdminSession：明文密码查看的 step-up 闸门（docs/21 T2）。
+ *
+ * 判定顺序与 requireAdminSession 一致（鉴权 → 非 admin 403 → 近期认证 401），
+ * 所以这里同时验证“顺序不倒退”：viewer 即使 authAt 很新也还是 403，
+ * 未登录还是 401「未登录」而不是 reauth。
+ */
+describe("requireRecentAdminSession", () => {
+  const NOW_SECONDS = 1_800_000_000;
+
+  async function cookieWithAge(ageSeconds: number, role: "admin" | "viewer" = "admin"): Promise<Request> {
+    const cookie = await createSessionCookie(env, {
+      ...sessionData(),
+      role,
+      authAt: NOW_SECONDS - ageSeconds,
+    });
+    return requestWith(cookie.split(";")[0]);
+  }
+
+  function grantRow(role: "admin" | "viewer"): void {
+    vi.mocked(queryAll).mockResolvedValue([
+      {
+        sid: "sid-1",
+        sub: "user-1",
+        role,
+        auth_at: NOW_SECONDS,
+        exp: 9_999_999_999,
+        revoked_at: null,
+      },
+    ]);
+  }
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(NOW_SECONDS * 1000);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("allows an admin whose authAt is inside the window", async () => {
+    grantRow("admin");
+    const result = await requireRecentAdminSession(env, await cookieWithAge(0));
+    expect(result).not.toBeInstanceOf(Response);
+    expect((result as { session: { sid: string } }).session.sid).toBe("sid-1");
+  });
+
+  it("allows an admin exactly at the window boundary (600s)", async () => {
+    grantRow("admin");
+    const result = await requireRecentAdminSession(env, await cookieWithAge(600));
+    expect(result).not.toBeInstanceOf(Response);
+  });
+
+  it("returns 401 reauth:true with no-store once the window has passed", async () => {
+    grantRow("admin");
+    const resp = (await requireRecentAdminSession(env, await cookieWithAge(601))) as Response;
+    expect(resp.status).toBe(401);
+    expect(resp.headers.get("Cache-Control")).toBe("no-store");
+    expect(await resp.json()).toEqual({ error: REAUTH_REQUIRED_MESSAGE, reauth: true });
+  });
+
+  it("honours an explicit maxAge override", async () => {
+    grantRow("admin");
+    const req = await cookieWithAge(120);
+    expect(await requireRecentAdminSession(env, req, 60)).toBeInstanceOf(Response);
+    expect(await requireRecentAdminSession(env, req, 300)).not.toBeInstanceOf(Response);
+  });
+
+  it("keeps 401 for no session and 403 for a fresh viewer (order unchanged)", async () => {
+    const anon = (await requireRecentAdminSession(env, requestWith(""))) as Response;
+    expect(anon.status).toBe(401);
+    expect((await anon.json() as { error: string }).error).toBe("未登录");
+
+    grantRow("viewer");
+    const viewer = (await requireRecentAdminSession(env, await cookieWithAge(0, "viewer"))) as Response;
+    expect(viewer.status).toBe(403);
+    expect((await viewer.json() as { error: string }).error).toBe(ADMIN_REQUIRED_MESSAGE);
+  });
+
+  it("returns 503 when the session store is unavailable", async () => {
+    vi.mocked(queryAll).mockRejectedValue(new Error("d1 down"));
+    const resp = (await requireRecentAdminSession(env, await cookieWithAge(0))) as Response;
+    expect(resp.status).toBe(503);
   });
 });

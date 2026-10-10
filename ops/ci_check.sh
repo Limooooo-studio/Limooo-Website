@@ -114,7 +114,52 @@ if [ -n "$CONFLICTS" ]; then
     exit 1
 fi
 
-# ── 守卫 2：生成的 TS 产物必须由 build 现场再生，且与仓库一致 ────────
+# ── 守卫 2：敏感文件绝不能被提交 ────────────────────────────────────
+# 背景：checkout 里如果缺少 .gitignore（新 clone / AI 工具自动开的 worktree），
+# `git add -A` 会把 secrets/、*.db、*.pem 一并提交。.gitignore 现已入库，但
+# 守卫仍然必需：`git add -f` 和「先 add 后改规则」都能绕过它。
+#
+# 检查两个来源：已暂存（staged）+ 未被忽略且未跟踪（untracked）。
+# --directory 把整个被忽略目录折叠成一行，既省输出也避免逐文件刷屏。
+# 模式清单与仓库根 .gitignore 的敏感段落对应，改一边记得改另一边。
+SENSITIVE_PATTERNS=(
+    'secrets/*' '.dev.vars' '*.db' '*.db-shm' '*.db-wal' '*.pem' '*.key'
+    'ops/out/*' 'ops/backups/*' 'backup-limooo-*' '各种密钥.txt' '*.mmdb'
+)
+
+sensitive_paths() {
+    {
+        (cd "$TARGET" && git diff --cached --name-only --diff-filter=ACMR 2>/dev/null || true)
+        (cd "$TARGET" && git ls-files --others --exclude-standard --directory 2>/dev/null || true)
+    } | sort -u
+}
+
+match_sensitive_path() {
+    local path="$1" pattern
+    for pattern in "${SENSITIVE_PATTERNS[@]}"; do
+        # shellcheck disable=SC2254 # 这里就是要让 pattern 参与通配匹配
+        case "$path" in $pattern) return 0 ;; esac
+    done
+    return 1
+}
+
+SENSITIVE_HITS=""
+while IFS= read -r path; do
+    [ -n "$path" ] || continue
+    if match_sensitive_path "$path"; then
+        SENSITIVE_HITS="${SENSITIVE_HITS}${path}"$'\n'
+    fi
+done < <(sensitive_paths)
+
+if [ -n "$SENSITIVE_HITS" ]; then
+    echo "[ci] FAIL: sensitive files would be committed:" >&2
+    printf '%s' "$SENSITIVE_HITS" | sed 's/^/       /' >&2
+    echo "       remove them from the index (git restore --staged <path>) or add an ignore rule;" >&2
+    echo "       secrets/ and *.db must never enter the repository." >&2
+    exit 1
+fi
+
+# ── 守卫 3：生成的 TS 产物必须由 build 现场再生，且与仓库一致 ────────
 # build 之后如果 functions/_lib/config.ts、functions/_data/*.ts、
 # src/config.py 相对 HEAD 有差异，说明提交时忘了带上它们 —— 这正是 CI 变红的根因。
 GENERATED_PATHS=(functions/_lib/config.ts functions/_data src/config.py)

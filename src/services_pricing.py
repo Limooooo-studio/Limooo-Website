@@ -18,8 +18,8 @@
 """services.limooo.cn 价目表的 CSV 数据源。
 
 价目表不再写死在 templates/services.html 里，而是每次构建时从
-``Flask/docs/services/*.csv`` 读取，改价只需改 CSV 再部署。
-注意 ``Flask/docs/`` 是**按子域分目录**的容器：``docs/`` 归 docs.limooo.cn
+``site/docs/services/*.csv`` 读取，改价只需改 CSV 再部署。
+注意 ``site/docs/`` 是**按子域分目录**的容器：``docs/`` 归 docs.limooo.cn
 （VitePress 内容源），``services/`` 归 services.limooo.cn（本模块读的价目表）：
 
   convention.csv   张数,价格[,是否接单]        → 场照拍摄（01）张数价
@@ -47,7 +47,7 @@ import os
 from config import BASE_DIR
 
 SERVICES_DIR = os.path.join(BASE_DIR, "docs", "services")
-# ↑ Flask/docs/ 现已按子域分目录：docs/ 归 docs.limooo.cn（VitePress 内容源，
+# ↑ site/docs/ 现已按子域分目录：docs/ 归 docs.limooo.cn（VitePress 内容源，
 #   由 ops/docs_deploy.sh 构建），services/ 归 services.limooo.cn（本模块读的价目表）。
 
 CONVENTION_CSV = "convention.csv"

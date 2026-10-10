@@ -44,7 +44,7 @@ export const onRequestGet: PagesFunction<Env> = async (context) => {
 export const onRequestPost: PagesFunction<Env> = async (context) => {
   const auth = await requireAdminSession(context.env, context.request);
   if (auth instanceof Response) return auth;
-  if (!(await verifyCsrf(context.env, context.request))) {
+  if (!(await verifyCsrf(context.env, context.request, auth.session.sid))) {
     return Response.json({ error: "无权限" }, { status: 403, headers: { "Cache-Control": "no-store" } });
   }
   if (!context.env.APPLE_ACCOUNT_ENCRYPTION_KEY) {

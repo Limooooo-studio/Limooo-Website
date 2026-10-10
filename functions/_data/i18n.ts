@@ -168,7 +168,8 @@ export const translations: Record<string, Record<string, string>> = {
     "time_just_now": "刚刚",
     "time_minutes_ago": "{n} 分钟前",
     "time_hours_ago": "{n} 小时前",
-    "time_days_ago": "{n} 天前"
+    "time_days_ago": "{n} 天前",
+    "toast_reauth_required": "请重新验证后重试"
   },
   "en-us": {
     "redirect_title": "Redirecting…",
@@ -338,7 +339,8 @@ export const translations: Record<string, Record<string, string>> = {
     "time_just_now": "just now",
     "time_minutes_ago": "{n} min ago",
     "time_hours_ago": "{n} h ago",
-    "time_days_ago": "{n} d ago"
+    "time_days_ago": "{n} d ago",
+    "toast_reauth_required": "Please re-authenticate and try again"
   },
   "ja-jp": {
     "redirect_title": "リダイレクト中…",
@@ -508,7 +510,8 @@ export const translations: Record<string, Record<string, string>> = {
     "time_just_now": "たった今",
     "time_minutes_ago": "{n} 分前",
     "time_hours_ago": "{n} 時間前",
-    "time_days_ago": "{n} 日前"
+    "time_days_ago": "{n} 日前",
+    "toast_reauth_required": "再認証してからもう一度お試しください"
   },
   "ko-kr": {
     "redirect_title": "리디렉션 중…",
@@ -678,6 +681,7 @@ export const translations: Record<string, Record<string, string>> = {
     "time_just_now": "방금 전",
     "time_minutes_ago": "{n}분 전",
     "time_hours_ago": "{n}시간 전",
-    "time_days_ago": "{n}일 전"
+    "time_days_ago": "{n}일 전",
+    "toast_reauth_required": "다시 인증한 후 재시도해 주세요"
   }
 };

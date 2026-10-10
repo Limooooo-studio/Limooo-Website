@@ -1,7 +1,7 @@
 /**
  * 与主站共享 cookie 的桥接层（docs.limooo.cn ↔ limooo.cn）。
  *
- * 主站 cookie（见 Flask/src/static/js/base.js 与 functions/_lib/routing.ts）：
+ * 主站 cookie（见 site/src/static/js/base.js 与 functions/_lib/routing.ts）：
  *   user_lang_preference = zh-cn | en-us | ja-jp | ko-kr   Domain=.limooo.cn
  *   limooo_theme         = light | dark                     Domain=.limooo.cn
  *

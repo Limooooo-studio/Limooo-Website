@@ -5,8 +5,8 @@
 改成「语言码在最后一段」（/video-platform/en-us）。这个脚本和 VitePress 配置读取
 同一份 rewrites.json，保证「加一个 md 就会有一个页面」这条约定不会被漏掉。
 
-<docs-dir> 传的是 **VitePress 内容根**，也就是 Flask/docs/docs/
-（Flask/docs/ 是按子域分的容器：docs/ 归 docs.limooo.cn，services/ 归
+<docs-dir> 传的是 **VitePress 内容根**，也就是 site/docs/docs/
+（site/docs/ 是按子域分的容器：docs/ 归 docs.limooo.cn，services/ 归
 services.limooo.cn），.vitepress/ 与它同级。
 
 用法：

@@ -19,7 +19,7 @@ export const onRequestGet: PagesFunction<Env> = async (context) => {
   }
   let token: string;
   try {
-    ({ token } = await createCsrfToken(context.env));
+    ({ token } = await createCsrfToken(context.env, session.sid));
   } catch {
     return Response.json(
       { error: "csrf_unavailable" },

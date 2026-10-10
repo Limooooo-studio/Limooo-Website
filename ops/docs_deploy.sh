@@ -2,9 +2,9 @@
 
 # Limooo - docs.limooo.cn build and deploy (VitePress)
 #
-# Content lives in Flask/docs/docs/ (the VitePress root, with its own
+# Content lives in site/docs/docs/ (the VitePress root, with its own
 # .vitepress/ beside it); every markdown file becomes
-# https://docs.limooo.cn/<path>. Flask/docs/ is a per-subdomain container:
+# https://docs.limooo.cn/<path>. site/docs/ is a per-subdomain container:
 # docs/ -> docs.limooo.cn, services/ -> services.limooo.cn (the price-list CSVs
 # read by src/services_pricing.py). The VitePress implementation is the fork at
 # Limooooo-Studio/vitepress, so that header / footer changes in the fork show up
@@ -34,7 +34,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-# Flask/docs/ 是按子域分目录的容器：docs/ = docs.limooo.cn，services/ = services.limooo.cn。
+# site/docs/ 是按子域分目录的容器：docs/ = docs.limooo.cn，services/ = services.limooo.cn。
 # 本脚本只负责 docs.limooo.cn 那一份内容（含它自己的 .vitepress/）。
 DOCS_DIR="$ROOT/docs/docs"
 SECRETS_FILE="${SECRETS_FILE:-$ROOT/secrets/webauthn.env}"
@@ -234,7 +234,7 @@ strip_emoji() {
 }
 
 # ── ⑥ 部署到 Pages ──────────────────────────────────────────────────
-# 在 BUILD_DIR 下执行：避免 wrangler 向上找到 Flask/wrangler.toml 里主站项目的 name。
+# 在 BUILD_DIR 下执行：避免 wrangler 向上找到 site/wrangler.toml 里主站项目的 name。
 echo "[docs] deploying Pages project: $PAGES_PROJECT"
 export CI=1 WRANGLER_SEND_METRICS=false
 (

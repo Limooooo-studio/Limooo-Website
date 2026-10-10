@@ -1,4 +1,4 @@
-# Limooo — Cloudflare Pages 配置（Pages 项目根 = 本仓库的 Flask/ 目录）
+# Limooo — Cloudflare Pages 配置（Pages 项目根 = 本仓库的 site/ 目录）
 name = "limooo"
 compatibility_date = "2026-08-15"
 pages_build_output_dir = "public"

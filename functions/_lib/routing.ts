@@ -124,36 +124,23 @@ export function escapeHtml(value: string): string {
 }
 
 /**
- * nginx 反代门禁页时（status.limooo.cn 等 VPS 站），由 VPS 带上的真实访客 IP/国家。
+ * 展示/日志用的访客 IP：只信 Cloudflare 写入的 `CF-Connecting-IP`。
  *
- * 这些头只用于「展示、埋点、Turnstile remoteip」，**绝不能**喂给
- * isGateTrustedIp / isBlocked 之类的信任判定：客户端可以自带同名头，
- * 用它做放行等于把门禁白名单交给访客自己声明。
+ * 历史上这里优先读 nginx 反代带上的 `X-Limooo-Client-IP` /
+ * `X-Limooo-Client-Country`，但那套 VPS 已于 2026-09-17 退租，这两个头
+ * **不再有可信来源**——任何访客自带即被采信，会污染 `visitor_rollups` 的
+ * IP 哈希 / 国家 / `ip_enc`（后台"查看访客 IP"解出的就是攻击者自报的地址）、
+ * 结构化日志，以及 Turnstile siteverify 的 `remoteip`。现已删除。
+ *
+ * 这两个函数只用于「展示、埋点、Turnstile remoteip」，**绝不能**喂给
+ * isGateTrustedIp / isBlocked 之类的信任判定；调用方自带同名头一律无效。
  */
-const FORWARDED_CLIENT_IP = "X-Limooo-Client-IP";
-const FORWARDED_CLIENT_COUNTRY = "X-Limooo-Client-Country";
-
-/** 经 VPS 反代转发的访客 IP（已规范化），不合法或缺失时返回空串。 */
-export function forwardedClientIp(request: Request): string {
-  const raw = request.headers.get(FORWARDED_CLIENT_IP);
-  return raw ? (normalizeIp(raw) ?? "") : "";
-}
-
-/** 经 VPS 反代转发的访客国家码（ISO 3166-1 alpha-2，如 CN/JP/KR），不合法时返回空串。 */
-export function forwardedClientCountry(request: Request): string {
-  const raw = (request.headers.get(FORWARDED_CLIENT_COUNTRY) ?? "").trim().toUpperCase();
-  return /^[A-Z]{2}$/.test(raw) ? raw : "";
-}
-
-/** 展示/日志用的访客 IP：优先 VPS 转发的真实访客，其次本连接来源。 */
 export function clientIpForLogs(request: Request): string {
-  return forwardedClientIp(request) || request.headers.get("CF-Connecting-IP") || "";
+  return request.headers.get("CF-Connecting-IP") || "";
 }
 
-/** 展示/日志用的访客国家码：优先 VPS 转发的真实访客，其次 Cloudflare 判定。 */
+/** 展示/日志用的访客国家码：只取 Cloudflare 判定的 `request.cf.country`。 */
 export function clientCountryForLogs(request: Request): string {
-  const forwarded = forwardedClientCountry(request);
-  if (forwarded) return forwarded;
   const cf = (request as Request & { cf?: { country?: string } }).cf;
   return cf?.country ?? "";
 }

@@ -1,11 +1,11 @@
 /**
  * docs.limooo.cn — VitePress 站点配置
  *
- * 内容源：Flask/docs/docs/*.md（本目录，即 VitePress 根）
+ * 内容源：site/docs/docs/*.md（本目录，即 VitePress 根）
  *   video-platform.md            → /video-platform/zh-cn
  *   en-us/video-platform.md      → /video-platform/en-us
- *   README.md                    → /README/zh-cn（Flask/README.md 的四语副本）
- *   LICENSE.md                   → /LICENSE/zh-cn（Flask/LICENSE_zh_CN.md 的四语副本）
+ *   README.md                    → /README/zh-cn（site/README.md 的四语副本）
+ *   LICENSE.md                   → /LICENSE/zh-cn（site/LICENSE_zh_CN.md 的四语副本）
  *   en-us/index.md               → /en-us
  *
  * **内容页的 URL 一律带显式语言段，默认语言 zh-cn 也不例外**；不带语言段的
@@ -13,7 +13,7 @@
  * 对应的 `/.../zh-cn`（2026-10-08 定）。首页是唯一的例外：`/` 就是 zh-cn，
  * `/en-us`、`/ja-jp`、`/ko-kr` 是其它语言。
  *
- * Flask/docs/ 是**按子域分目录**的容器：docs/ 归 docs.limooo.cn（本目录），
+ * site/docs/ 是**按子域分目录**的容器：docs/ 归 docs.limooo.cn（本目录），
  * services/ 归 services.limooo.cn（价目表 CSV，由 src/services_pricing.py 读取）。
  *
  * 语言码放在**页面路径最后一段**（不是 VitePress 的 locales 前缀），所以不用
@@ -255,7 +255,7 @@ const REWRITES: Record<string, string> = JSON.parse(
 )
 
 /**
- * 价目表 CSV 现在在 Flask/docs/services/，与 VitePress 根（Flask/docs/docs/）
+ * 价目表 CSV 现在在 site/docs/services/，与 VitePress 根（site/docs/docs/）
  * **同级**，本来就不会进入构建工作区，所以不再需要专门排除 services/。
  * 留一条 csv 兜底：万一以后有人往内容根里塞数据文件，也不会被原样发布出去。
  */

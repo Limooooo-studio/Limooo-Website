@@ -166,5 +166,6 @@
   "time_just_now": "たった今",
   "time_minutes_ago": "{n} 分前",
   "time_hours_ago": "{n} 時間前",
-  "time_days_ago": "{n} 日前"
+  "time_days_ago": "{n} 日前",
+  "toast_reauth_required": "再認証してからもう一度お試しください"
 }

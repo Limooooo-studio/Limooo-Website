@@ -29,6 +29,7 @@ export const CONTRACT = {
   "gate_ttl_seconds": 3600,
   "session_ttl_seconds": 2592000,
   "pending_ttl_seconds": 600,
+  "reveal_max_auth_age_seconds": 600,
   "public_hosts": [
     "limooo.cn",
     "www.limooo.cn",
@@ -152,3 +153,4 @@ export const CSRF_COOKIE = CONTRACT.csrf_cookie;
 export const GATE_TTL_SECONDS = CONTRACT.gate_ttl_seconds;
 export const SESSION_TTL_SECONDS = CONTRACT.session_ttl_seconds;
 export const PENDING_TTL_SECONDS = CONTRACT.pending_ttl_seconds;
+export const REVEAL_MAX_AUTH_AGE_SECONDS = CONTRACT.reveal_max_auth_age_seconds;

@@ -9,6 +9,9 @@ const env = {
   GATE_HMAC_KEY: "csrf-test-gate",
 } as Env;
 
+const SID_A = "sid-a";
+const SID_B = "sid-b";
+
 function request(
   origin: string,
   token: string,
@@ -27,25 +30,47 @@ function request(
 
 describe("csrf", () => {
   it("round-trips a signed token with matching cookie and header", async () => {
-    const { token } = await createCsrfToken(env);
-    expect(await verifyCsrf(env, request("https://account.limooo.cn", token))).toBe(true);
+    const { token } = await createCsrfToken(env, SID_A);
+    expect(await verifyCsrf(env, request("https://account.limooo.cn", token), SID_A)).toBe(true);
   });
 
   it("rejects missing or mismatched header/cookie", async () => {
-    const { token } = await createCsrfToken(env);
-    expect(await verifyCsrf(env, request("https://account.limooo.cn", "", token))).toBe(false);
-    expect(await verifyCsrf(env, request("https://account.limooo.cn", token, "different"))).toBe(false);
+    const { token } = await createCsrfToken(env, SID_A);
+    expect(await verifyCsrf(env, request("https://account.limooo.cn", "", token), SID_A)).toBe(false);
+    expect(
+      await verifyCsrf(env, request("https://account.limooo.cn", token, "different"), SID_A),
+    ).toBe(false);
+  });
+
+  it("rejects a token issued for a different session", async () => {
+    const { token } = await createCsrfToken(env, SID_A);
+    expect(await verifyCsrf(env, request("https://account.limooo.cn", token), SID_B)).toBe(false);
+    // 同一个 token 在自己的会话里仍然有效，排除“因为签名坏了一律拒绝”的假阴性。
+    expect(await verifyCsrf(env, request("https://account.limooo.cn", token), SID_A)).toBe(true);
+  });
+
+  it("rejects an empty session id even when the signature matches", async () => {
+    const { token } = await createCsrfToken(env, SID_A);
+    expect(await verifyCsrf(env, request("https://account.limooo.cn", token), "")).toBe(false);
+    await expect(createCsrfToken(env, "")).rejects.toThrow();
   });
 
   it("rejects cross-site origins", async () => {
-    const { token } = await createCsrfToken(env);
-    expect(await verifyCsrf(env, request("https://evil.example", token))).toBe(false);
+    const { token } = await createCsrfToken(env, SID_A);
+    expect(await verifyCsrf(env, request("https://evil.example", token), SID_A)).toBe(false);
   });
 
-  it("allows localhost and 127.0.0.1 origins", async () => {
-    const { token } = await createCsrfToken(env);
-    expect(await verifyCsrf(env, request("http://localhost:8788", token))).toBe(true);
-    expect(await verifyCsrf(env, request("http://127.0.0.1:8080", token))).toBe(true);
+  it("rejects localhost origins unless ALLOW_LOCAL_ORIGINS=1 is set", async () => {
+    const { token } = await createCsrfToken(env, SID_A);
+    expect(await verifyCsrf(env, request("http://localhost:8788", token), SID_A)).toBe(false);
+    expect(await verifyCsrf(env, request("http://127.0.0.1:8080", token), SID_A)).toBe(false);
+
+    const localEnv = { ...env, ALLOW_LOCAL_ORIGINS: "1" } as Env;
+    expect(await verifyCsrf(localEnv, request("http://localhost:8788", token), SID_A)).toBe(true);
+    expect(await verifyCsrf(localEnv, request("http://127.0.0.1:8080", token), SID_A)).toBe(true);
+    // 除了 "1" 之外的值一律视为关闭
+    const offEnv = { ...env, ALLOW_LOCAL_ORIGINS: "true" } as Env;
+    expect(await verifyCsrf(offEnv, request("http://localhost:8788", token), SID_A)).toBe(false);
   });
 
   it("cookie header is not HttpOnly and can be read by JavaScript", () => {

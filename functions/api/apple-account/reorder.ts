@@ -9,7 +9,7 @@ import type { Env } from "../../_lib/env";
 export const onRequestPut: PagesFunction<Env> = async (context) => {
   const auth = await requireAdminSession(context.env, context.request);
   if (auth instanceof Response) return auth;
-  if (!(await verifyCsrf(context.env, context.request))) {
+  if (!(await verifyCsrf(context.env, context.request, auth.session.sid))) {
     return Response.json({ error: "无权限" }, { status: 403, headers: { "Cache-Control": "no-store" } });
   }
 

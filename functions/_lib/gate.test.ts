@@ -10,6 +10,7 @@ import {
   isBlocked,
   mintGateCookie,
   readGateCookie,
+  verifyTurnstile,
 } from "./gate";
 import type { RequestContext } from "./routing";
 import { queryAll } from "./d1";
@@ -26,7 +27,7 @@ beforeEach(() => {
 });
 
 describe("isBlocked", () => {
-  it("shows the visitor IP/country forwarded by the origin proxy", async () => {
+  it("ignores spoofed X-Limooo-Client-* headers and shows the connecting IP", async () => {
     const req = new Request("https://auth.limooo.cn/__gate/diag", {
       headers: {
         "CF-Connecting-IP": "43.108.57.161",
@@ -35,7 +36,7 @@ describe("isBlocked", () => {
       },
     });
     const diag = handleGateDiag({ request: req } as RequestContext);
-    expect(await diag.json()).toMatchObject({ ip: "203.0.113.9", country: "JP" });
+    expect(await diag.json()).toMatchObject({ ip: "43.108.57.161", country: "—" });
   });
 
   it("falls back to the connecting IP when no forwarded header is present", async () => {
@@ -119,6 +120,33 @@ describe("handleVerify", () => {
 
     expect(resp.status).toBe(303);
     expect(resp.headers.get("Location")).toBe("https://limooo.cn/services");
+    vi.unstubAllGlobals();
+  });
+
+  it("passes CF-Connecting-IP to siteverify, ignoring spoofed forwarded headers", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(Response.json({ success: true }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const form = new FormData();
+    form.set("cf-turnstile-response", "token");
+    form.set("host", "limooo.cn");
+    form.set("next", "/services");
+    const request = new Request("https://limooo.cn/__gate/verify", {
+      method: "POST",
+      headers: {
+        Accept: "application/json",
+        "CF-Connecting-IP": "43.108.57.161",
+        "X-Limooo-Client-IP": "1.2.3.4",
+        "X-Limooo-Client-Country": "CN",
+      },
+      body: form,
+    });
+
+    await handleVerify(verifyContext(request));
+
+    const body = new URLSearchParams(String((fetchMock.mock.calls[0][1] as RequestInit).body));
+    expect(body.get("remoteip")).toBe("43.108.57.161");
+    expect(body.get("remoteip")).not.toBe("1.2.3.4");
     vi.unstubAllGlobals();
   });
 });

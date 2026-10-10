@@ -4,6 +4,7 @@ import { execute, queryAll } from "./d1";
 import type { Env } from "./env";
 import {
   PENDING_COOKIE,
+  REVEAL_MAX_AUTH_AGE_SECONDS,
   ROOT_DOMAIN,
   SESSION_COOKIE,
   SESSION_TTL_SECONDS,
@@ -290,4 +291,44 @@ export async function requireAdminSession(
     );
   }
   return { session };
+}
+
+/** 会话「近期认证」的默认窗口（秒），来自 `config-contract.json`。 */
+export const REVEAL_MAX_AUTH_AGE = REVEAL_MAX_AUTH_AGE_SECONDS;
+
+/** 近期认证超时：前端据此跳 `/login?next=<当前页>` 重新走一次 Access 认证。 */
+export const REAUTH_REQUIRED_MESSAGE = "需要重新验证";
+
+/**
+ * 步进式鉴权（step-up）：在 `requireAdminSession` 之上要求**近期认证**。
+ *
+ * 只有 Cloudflare Access 能签发 `authAt`（`functions/login.ts`），而会话 cookie
+ * 本身有 30 天 TTL。明文密码查看属于最敏感的读操作，不能接受「30 天前登录过
+ * 一次」就随时解密：本函数要求 `now - session.authAt <= maxAgeSeconds`
+ * （默认 600 秒，见 `reveal_max_auth_age_seconds`），超时返回 401 +
+ * `{ error: "需要重新验证", reauth: true }`，由前端跳 `/login` 重新认证。
+ *
+ * 判定顺序与 `requireAdminSession` 一致（鉴权 → 非 admin 403 → 近期认证 401），
+ * 因此未登录仍是 401「未登录」、只读账户仍是 403；调用方拿到 Response 直接返回。
+ *
+ * 注意：重新认证是否**真的**要求用户再输一次凭据，取决于 Access 应用自身的
+ * Session Duration；若 Access 会话仍然有效，`/login` 会静默签发新的 `authAt`。
+ * 当前 `account.limooo.cn`（Limooo-Apple）的 Session Duration 已在 docs/21 记录。
+ */
+export async function requireRecentAdminSession(
+  env: Env,
+  request: Request,
+  maxAgeSeconds: number = REVEAL_MAX_AUTH_AGE,
+): Promise<{ session: SessionData } | Response> {
+  const auth = await requireAdminSession(env, request);
+  if (auth instanceof Response) return auth;
+  const now = Math.floor(Date.now() / 1000);
+  const age = now - auth.session.authAt;
+  if (!Number.isFinite(age) || age > maxAgeSeconds) {
+    return Response.json(
+      { error: REAUTH_REQUIRED_MESSAGE, reauth: true },
+      { status: 401, headers: { "Cache-Control": "no-store" } },
+    );
+  }
+  return { session: auth.session };
 }

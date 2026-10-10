@@ -15,6 +15,9 @@ export interface Env {
   /** 逗号分隔的 AUD 列表：命中即 viewer（admin 优先）。 */
   ACCESS_VIEWER_AUDS?: string;
   SESSION_HMAC_KEY?: string;
+  // 本地开发用：设 "1" 才放行 http(s)://localhost|127.0.0.1 的 CSRF Origin，
+  // 生产不设即默认关闭（只写进本地 .dev.vars，不进 Pages Secret）
+  ALLOW_LOCAL_ORIGINS?: string;
   // 访客行 IP 加密（Fernet 密钥，独立密钥，只服务 visitor_rollups.ip_enc）
   VISITOR_IP_KEY?: string;
   // Apple Account 密码加密（Fernet 密钥，与现有 Flask 部署共用）

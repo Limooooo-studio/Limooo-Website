@@ -1,0 +1,60 @@
+# ── Python ──
+__pycache__/
+
+# ── macOS ──
+.DS_Store
+
+# ── 本地开发文件 ──
+chrome.txt
+node_modules/
+
+# ── Claude Code 配置 ──
+.claude/
+
+# ── D1 迁移本地状态（不入库；apply 记录只在本机有意义） ──
+.d1-migrations/
+
+# ── Cloudflare Pages 本地密钥 ──
+.dev.vars
+.dev.vars.example
+
+# ── wrangler 本地运行缓存 ──
+.wrangler/
+
+# ── Pages 本地构建环境（自动创建，不入库） ──
+.venv-build/
+
+# ── Pages 构建产物（仅保留占位文件） ──
+public/*
+!public/.gitkeep
+
+# ── 子域预览（构建生成，仅本地预览用） ──
+preview/*
+!preview/.gitkeep
+
+# ── 作品原图（体积大，不入库；本地保留 + 私有 R2 桶 limooo-originals） ──
+src/static/portfolio/
+
+# ── 迁移导出（含加密密码等敏感数据，绝不入库） ──
+ops/out/
+
+# ── 运行时数据库（服务端自动生成） ──
+*.db
+*.db-shm
+*.db-wal
+
+# ── 密钥与证书（私钥、令牌一律不入库；凭据只走 Secrets 或本机 secrets/） ──
+secrets/
+*.pem
+*.key
+
+# ── GeoIP 数据库（体积大，不入库） ──
+*.mmdb
+
+# ── 本地运维文件 ──
+各种密钥.txt
+Logs/
+
+# ── 服务器重置备份（数据库 dump 等，绝不入库） ──
+backup-limooo-*/
+ops/backups/

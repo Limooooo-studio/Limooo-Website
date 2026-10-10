@@ -103,7 +103,7 @@ For a local preview of the generated site, build and open the output from `previ
 For a clean local build, use the same dependency set as the deployment script:
 
 ```bash
-cd Flask
+cd site
 npm ci
 npm run build
 ```
@@ -185,7 +185,7 @@ There is no server to deploy to: the target is Cloudflare Pages (`limooo`) plus 
 standalone Workers. From the repository root:
 
 ```bash
-cd Flask
+cd site
 bash ops/deploy.sh              # with no arguments = --all (full deploy, see below)
 bash ops/deploy.sh --all        # commit + push + deploy Pages + docs
 bash ops/deploy.sh --pages      # deploy the main Pages project only
@@ -206,7 +206,7 @@ systemd or Nginx steps.
 
 ### Docs site (docs.limooo.cn)
 
-`Flask/docs/` is a **per-subdomain container**: `docs/` holds the docs.limooo.cn
+`site/docs/` is a **per-subdomain container**: `docs/` holds the docs.limooo.cn
 VitePress root (one markdown file per page per language), `services/` holds the
 services.limooo.cn price-list CSVs. The language code is the **last** URL segment and
 content pages carry it explicitly (`/README/zh-cn`, `/README/en-us`); a suffix-less

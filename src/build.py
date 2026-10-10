@@ -328,6 +328,7 @@ def write_config_functions() -> None:
         "export const GATE_TTL_SECONDS = CONTRACT.gate_ttl_seconds;",
         "export const SESSION_TTL_SECONDS = CONTRACT.session_ttl_seconds;",
         "export const PENDING_TTL_SECONDS = CONTRACT.pending_ttl_seconds;",
+        "export const REVEAL_MAX_AUTH_AGE_SECONDS = CONTRACT.reveal_max_auth_age_seconds;",
         "",
     ]
     ts_path = os.path.join(FUNCTIONS_DIR, "_lib", "config.ts")
@@ -833,7 +834,7 @@ def main() -> int:
             html = html.replace("</body>", preview_i18n_patch() + "</body>")
             with open(os.path.join(PREVIEW_OUT, name), "w", encoding="utf-8") as f:
                 f.write(html)
-    # 预览索引（列出所有子域页面，模板在 Flask/src/templates/preview.html）
+    # 预览索引（列出所有子域页面，模板在 site/src/templates/preview.html）
     with appmod.test_request_context("/", headers={"Host": "limooo.cn"}):
         index_html = render_template(
             "preview.html",

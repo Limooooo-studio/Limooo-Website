@@ -243,7 +243,18 @@ async function revealPw(id) {
     try {
         const resp = await fetch('/api/apple-account/accounts/' + id + '/reveal', { method: 'POST', headers: csrfHeaders() });
         if (resp.status === 403) { toast(t('toast_no_permission')); return null; }
-        if (resp.status === 401) { window.location.href = '/login?next=' + encodeURIComponent(location.href); return null; }
+        if (resp.status === 401) {
+            // 近期认证超时(reauth):会话本身还有效,只是 authAt 太旧。
+            // 跳 /login 重新走一次 Access,回来后由用户再点一次,不自动重放 reveal。
+            var body = {};
+            try { body = await resp.json(); } catch(e) { body = {}; }
+            if (body && body.reauth) toast(t('toast_reauth_required'));
+            // 先让提示显示一帧,再跳转
+            setTimeout(function() {
+                window.location.href = '/login?next=' + encodeURIComponent(location.href);
+            }, body && body.reauth ? 800 : 0);
+            return null;
+        }
         if (!resp.ok) { toast(t('toast_pw_fetch_failed')); return null; }
         const data = await resp.json();
         return data.password;

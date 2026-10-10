@@ -498,7 +498,13 @@ export async function isBlocked(
   return false;
 }
 
-async function verifyTurnstile(
+/**
+ * 调用 Turnstile siteverify；`remoteip` 只来自 `CF-Connecting-IP`。
+ *
+ * 导出仅为测试可断言「访客自带的转发头不会进入 remoteip」；生产调用点只有
+ * `handleVerify` 一处。
+ */
+export async function verifyTurnstile(
   token: string,
   remoteip: string,
   secret: string,
@@ -559,8 +565,8 @@ export async function handleVerify(context: RequestContext): Promise<Response> {
   const token = form.get("cf-turnstile-response")?.toString() ?? "";
   const next = safeNextPath(form.get("next")?.toString() ?? null);
   const host = sanitizeHost(form.get("host")?.toString() ?? null);
-  // 经 VPS 反代时用转发的真实访客 IP：Turnstile 会拿它跟解题来源比对，
-  // 传成 VPS 的地址会让校验依据失真。
+  // Turnstile 会拿 remoteip 跟解题来源比对；只传 Cloudflare 认定的连接 IP，
+  // 访客自带的转发头一律不采信（否则等于让访客自己声明校验依据）。
   const remoteip = clientIpForLogs(request);
 
   let success = false;

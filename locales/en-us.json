@@ -166,5 +166,6 @@
   "time_just_now": "just now",
   "time_minutes_ago": "{n} min ago",
   "time_hours_ago": "{n} h ago",
-  "time_days_ago": "{n} d ago"
+  "time_days_ago": "{n} d ago",
+  "toast_reauth_required": "Please re-authenticate and try again"
 }

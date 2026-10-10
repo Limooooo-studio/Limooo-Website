@@ -109,7 +109,7 @@ HTML/CSS/JS の診断がテンプレート構文を誤読しません。
 クリーンなローカルビルドには、デプロイスクリプトと同じ依存関係セットを使用します：
 
 ```bash
-cd Flask
+cd site
 npm ci
 npm run build
 ```
@@ -191,7 +191,7 @@ TLS 証明書は Cloudflare が Pages のカスタムドメイン向けに発行
 リポジトリのルートから：
 
 ```bash
-cd Flask
+cd site
 bash ops/deploy.sh              # with no arguments = --all (full deploy, see below)
 bash ops/deploy.sh --all        # commit + push + deploy Pages + docs
 bash ops/deploy.sh --pages      # deploy the main Pages project only
@@ -212,7 +212,7 @@ systemd、Nginx のステップはありません。
 
 ### ドキュメントサイト（docs.limooo.cn）
 
-`Flask/docs/` は**サブドメインごとのコンテナ**です：`docs/` には docs.limooo.cn の
+`site/docs/` は**サブドメインごとのコンテナ**です：`docs/` には docs.limooo.cn の
  VitePress ルート（1 ページ 1 言語につき 1 つの markdown ファイル）が入り、`services/` には
  services.limooo.cn の価格表 CSV が入ります。言語コードは URL の**最後**のセグメントで、
 内容ページは常に明示的に付けます（`/README/zh-cn`、`/README/en-us`）。サフィックスなしの

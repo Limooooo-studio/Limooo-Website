@@ -166,5 +166,6 @@
   "time_just_now": "방금 전",
   "time_minutes_ago": "{n}분 전",
   "time_hours_ago": "{n}시간 전",
-  "time_days_ago": "{n}일 전"
+  "time_days_ago": "{n}일 전",
+  "toast_reauth_required": "다시 인증한 후 재시도해 주세요"
 }

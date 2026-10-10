@@ -109,9 +109,9 @@ strip_emoji() {
 }
 
 # ── 部署 ────────────────────────────────────────────────────────────
-# 必须在本目录（Flask/）执行，否则 wrangler 找不到 functions/，会把整个
+# 必须在本目录（site/）执行，否则 wrangler 找不到 functions/，会把整个
 # Pages Functions 丢掉（docs/17 §11.6 出过这次事故）。
-echo "[pages] deploying Pages (must run under Flask/, otherwise Functions are dropped)"
+echo "[pages] deploying Pages (must run under site/, otherwise Functions are dropped)"
 export CI=1 WRANGLER_SEND_METRICS=false
 "$WRANGLER_BIN" pages deploy "$PUBLIC_DIR" \
     --project-name "$PAGES_PROJECT" \

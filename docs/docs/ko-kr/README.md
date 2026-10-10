@@ -109,7 +109,7 @@ python3 src/build.py
 깨끗한 로컬 빌드를 위해서는 배포 스크립트와 동일한 의존성 세트를 사용하세요:
 
 ```bash
-cd Flask
+cd site
 npm ci
 npm run build
 ```
@@ -192,7 +192,7 @@ TLS 인증서는 Pages 사용자 지정 도메인에 대해 Cloudflare가 발급
 저장소 루트에서:
 
 ```bash
-cd Flask
+cd site
 bash ops/deploy.sh              # with no arguments = --all (full deploy, see below)
 bash ops/deploy.sh --all        # commit + push + deploy Pages + docs
 bash ops/deploy.sh --pages      # deploy the main Pages project only
@@ -213,7 +213,7 @@ Pages + docs, 즉 "전체 배포" 계약입니다. 로컬에 이미 커밋된 �
 
 ### 문서 사이트(docs.limooo.cn)
 
-`Flask/docs/`는 **서브도메인별 컨테이너**입니다: `docs/`에는 docs.limooo.cn
+`site/docs/`는 **서브도메인별 컨테이너**입니다: `docs/`에는 docs.limooo.cn
 VitePress 루트(언어별·페이지별 마크다운 파일 하나)가, `services/`에는
 services.limooo.cn 가격표 CSV가 들어 있습니다. 언어 코드는 URL의 **마지막** 세그먼트이고,
 콘텐츠 페이지는 항상 명시적으로 붙입니다(`/README/zh-cn`, `/README/en-us`). 접미사 없는

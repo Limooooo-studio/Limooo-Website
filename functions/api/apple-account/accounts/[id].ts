@@ -14,7 +14,7 @@ export const onRequestPut: PagesFunction<Env> = async (context) => {
   if (auth instanceof Response) return auth;
   const id = parseAccountId((context.params as { id?: string }).id);
   if (!id) return Response.json({ error: "无效请求" }, { status: 400, headers: NO_STORE });
-  if (!(await verifyCsrf(context.env, context.request))) {
+  if (!(await verifyCsrf(context.env, context.request, auth.session.sid))) {
     return Response.json({ error: "无权限" }, { status: 403, headers: NO_STORE });
   }
 
@@ -64,7 +64,7 @@ export const onRequestDelete: PagesFunction<Env> = async (context) => {
   if (auth instanceof Response) return auth;
   const id = parseAccountId((context.params as { id?: string }).id);
   if (!id) return Response.json({ error: "无效请求" }, { status: 400, headers: NO_STORE });
-  if (!(await verifyCsrf(context.env, context.request))) {
+  if (!(await verifyCsrf(context.env, context.request, auth.session.sid))) {
     return Response.json({ error: "无权限" }, { status: 403, headers: NO_STORE });
   }
   const existing = await queryAll<{ id: number }>(context.env.DB, "SELECT id FROM apple_accounts WHERE id = ?", id);

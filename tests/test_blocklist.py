@@ -1,14 +1,6 @@
-"""封禁名单解析与扫描特征测试。"""
+"""封禁名单解析与 D1 同步测试（Nginx 扫描部分已随 VPS 退租删除）。"""
 
 import auto_block
-
-
-def test_scan_path_patterns():
-    assert auto_block._is_scan_path("/.env") is True
-    assert auto_block._is_scan_path("/.git/config") is True
-    assert auto_block._is_scan_path("/wp-admin") is True
-    assert auto_block._is_scan_path("/") is False
-    assert auto_block._is_scan_path("/services") is False
 
 
 def test_normalize_cidr():
@@ -91,22 +83,3 @@ def test_sync_d1_dry_run_does_not_write(monkeypatch, tmp_path):
     monkeypatch.setattr(auto_block, "_call", _fake_d1_call(calls))
     assert auto_block.sync_d1(dry_run=True) == 0
     assert not any("INSERT" in body["sql"] or "DELETE" in body["sql"] for _, _, body in calls)
-
-
-def test_run_scan_default_does_not_call_cloudflare(monkeypatch, tmp_path):
-    blocklist = tmp_path / "blocklist.txt"
-    blocklist.write_text("# existing\n1.2.3.0/24\n", encoding="utf-8")
-    monkeypatch.setattr(auto_block, "BLOCKLIST_TXT", str(blocklist))
-    monkeypatch.setattr(auto_block, "collect_logs", lambda: ["/tmp/access.log"])
-    monkeypatch.setattr(
-        auto_block,
-        "analyze",
-        lambda files: {"1.2.3.4": {"total": 1, "ok": 0, "scan": False}},
-    )
-    monkeypatch.setattr(auto_block, "sync_d1", lambda dry_run=False: 0)
-    monkeypatch.setattr(
-        auto_block,
-        "sync_cloudflare",
-        lambda: (_ for _ in ()).throw(AssertionError("default path must not call CF")),
-    )
-    auto_block.run_scan()

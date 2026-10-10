@@ -35,6 +35,7 @@ PYTHON_FIELD_MAP = {
     "gate_ttl_seconds": "GATE_COOKIE_TTL",
     "session_ttl_seconds": "SESSION_TTL",
     "pending_ttl_seconds": "PENDING_TTL",
+    "reveal_max_auth_age_seconds": "REVEAL_MAX_AUTH_AGE",
     "public_hosts": "PUBLIC_HOSTS",
     "managed_hosts": "MANAGED_HOSTS",
     "shared_lang_hosts": "SHARED_LANG_HOSTS",

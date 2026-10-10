@@ -18,28 +18,30 @@
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 """
-Auto-block script: scan Nginx access.log for IPs that never returned 200 or hit
-known scan paths, append their /24 to blocklist.txt, then sync to D1.
+Blocklist sync script: reconcile the local blocklist snapshot with D1
+`blocked_ips` (the single source of truth).
+
+历史上这里还负责扫描 VPS 上的 Nginx access.log 来自动生成封禁网段；Nginx 随
+`2026-09-17` 退租一并消失，扫描部分（`LOG_PATTERN` / `SCAN_PATTERNS` /
+`_is_scan_path` / `collect_logs` / `analyze` / `run_scan`）已删除。现在的日志
+来源只有 Cloudflare 边缘（`ray_log_v2` 等），封禁判定在 Pages / Worker 侧。
 
 权威链路：D1 `blocked_ips` -> 每日 sync-worker -> Cloudflare IP List。
 `blocklist.txt` 是本地导入种子/可审计快照；CF List 只有在显式维护命令
 `auto_block.py cf` 才直接同步，默认运行路径不会写 Cloudflare。
 
 Usage:
-    python3 auto_block.py                 # full: scan + write blocklist + D1
     python3 auto_block.py d1 [--dry-run]  # sync blocklist.txt to D1 (full diff)
     python3 auto_block.py cf              # maintenance: sync blocklist.txt to CF only
     python3 auto_block.py sync [--dry-run]  # alias of `d1` (不再直写 CF)
 """
 
 import json
-import os
 import re
 import sys
 import time
 import urllib.error
 import urllib.request
-from collections import defaultdict
 
 # 仓库根目录（本文件位于 src/ 下，向上取一层）
 from config import (
@@ -51,76 +53,10 @@ from config import (
     ENV_FILE,
 )
 from cidr import normalize_cidr, parse_cidr
-LOG_PATTERN = re.compile(r'^(\S+).*?"([^"]*)"\s+(\d+)')
-
-# 已知恶意扫描路径模式：命中任一条即零容忍封禁
-SCAN_PATTERNS = [
-    re.compile(r"/\.env"),
-    re.compile(r"/\.git/"),
-    re.compile(r"/wp-admin"),
-    re.compile(r"/wp-login"),
-    re.compile(r"/actuator/"),
-    re.compile(r"/_profiler"),
-    re.compile(r"/\.aws/"),
-    re.compile(r"/\.DS_Store"),
-    re.compile(r"/config\.env"),
-    re.compile(r"/\.{2,}/"),
-    re.compile(r"/xmlrpc\.php"),
-    re.compile(r"/\.(svn|cvs|hg)/"),
-    re.compile(r"/(admin|manager|test)\.php$"),
-    re.compile(r"/phpmyadmin"),
-    re.compile(r"/\.npmrc"),
-    re.compile(r"/composer\.json"),
-]
-
-
-def _is_scan_path(path: str) -> bool:
-    """判断请求路径是否命中已知恶意扫描特征"""
-    for pat in SCAN_PATTERNS:
-        if pat.search(path):
-            return True
-    return False
 
 
 # Match x.x.x.0/24
 CIDR24_RE = re.compile(r'^(\d+\.\d+\.\d+)\.0/24$')
-
-
-def collect_logs() -> list[str]:
-    files = []
-    for f in ["/var/log/nginx/access.log", "/var/log/nginx/access.log.1"]:
-        if os.path.isfile(f):
-            files.append(f)
-    if not files:
-        print("[!] Nginx access.log not found")
-    return files
-
-
-def analyze(files: list[str]) -> dict:
-    ips = defaultdict(lambda: {"total": 0, "ok": 0, "scan": False})
-    for fp in files:
-        try:
-            with open(fp, errors="ignore") as f:
-                for line in f:
-                    m = LOG_PATTERN.match(line)
-                    if not m:
-                        continue
-                    ip = m.group(1)
-                    if ip in ("127.0.0.1", "-") or ip.startswith("192.168."):
-                        continue
-                    d = ips[ip]
-                    d["total"] += 1
-                    if m.group(3) == "200":
-                        d["ok"] += 1
-                    parts = m.group(2).split()
-                    if len(parts) < 2:
-                        continue
-                    path = parts[1]
-                    if not d["scan"] and _is_scan_path(path):
-                        d["scan"] = True
-        except FileNotFoundError:
-            pass
-    return ips
 
 
 def read_blocklist_txt(path: str) -> tuple[list[str], set[str]]:
@@ -439,49 +375,11 @@ def sync_d1(dry_run: bool = False) -> int:
     return 0
 
 
-# ── 完整扫描流程（原 auto_block.py main） ──────────────
-def run_scan() -> None:
-    files = collect_logs()
-    if not files:
-        print("[auto_block] Nginx access.log not found; still reconciling D1 snapshot", flush=True)
-        sync_d1()
-        return
-
-    print("[auto_block] Analyzing logs...", flush=True)
-    ips = analyze(files)
-    print(f"  {len(ips)} unique IPs", flush=True)
-
-    bad = {ip for ip, d in ips.items() if d["ok"] == 0 or d["scan"]}
-    prefixes = set()
-    for ip in bad:
-        parts = ip.split(".")
-        if len(parts) >= 3:
-            prefixes.add(f"{parts[0]}.{parts[1]}.{parts[2]}")
-
-    static_lines, existing_prefixes = read_blocklist_txt(BLOCKLIST_TXT)
-
-    new_ones = sorted(prefixes - existing_prefixes)
-    all_prefixes = sorted(existing_prefixes | prefixes)
-
-    # 只有新增时才重写文件，避免每次 cron 都无谓地触碰业务快照。
-    if new_ones:
-        with open(BLOCKLIST_TXT, "w") as f:
-            for line in static_lines:
-                f.write(line + "\n")
-            if static_lines:
-                f.write("\n")
-            for p in all_prefixes:
-                f.write(f"{p}.0/24\n")
-        print("  blocklist.txt updated", flush=True)
-    else:
-        print(f"  No new prefixes, {len(existing_prefixes)} existing /24", flush=True)
-
-    sync_d1()
-    print(f"  Active source sync done: +{len(new_ones)} new /24 (total {len(all_prefixes)})", flush=True)
-
-    # 即使当天没有新增，也执行 D1 全量 diff，让手工删除的种子条目真正消失。
-    sync_d1()
-    print("  Synced to D1; Cloudflare IP List is updated by sync-worker only", flush=True)
+def usage() -> None:
+    print("Usage:", file=sys.stderr)
+    print("  python3 auto_block.py d1 [--dry-run]    # sync blocklist.txt to D1 (full diff)", file=sys.stderr)
+    print("  python3 auto_block.py cf                # maintenance: sync blocklist.txt to CF only", file=sys.stderr)
+    print("  python3 auto_block.py sync [--dry-run]  # alias of d1 (never writes CF)", file=sys.stderr)
 
 
 def main():
@@ -492,7 +390,9 @@ def main():
     elif cmd == "cf":
         sys.exit(sync_cloudflare())
     else:
-        run_scan()
+        # 默认分支原先跑 Nginx 日志扫描；数据源随 VPS 退租消失，现在只提示用法。
+        usage()
+        sys.exit(2)
 
 
 if __name__ == "__main__":

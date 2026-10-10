@@ -109,7 +109,7 @@ python3 src/build.py
 为获得干净的本地构建，请使用与部署脚本相同的依赖集合：
 
 ```bash
-cd Flask
+cd site
 npm ci
 npm run build
 ```
@@ -191,7 +191,7 @@ TLS 证书由 Cloudflare 为 Pages 自定义域名签发与续期，因此 `acme
 在仓库根目录下执行：
 
 ```bash
-cd Flask
+cd site
 bash ops/deploy.sh              # with no arguments = --all (full deploy, see below)
 bash ops/deploy.sh --all        # commit + push + deploy Pages + docs
 bash ops/deploy.sh --pages      # deploy the main Pages project only
@@ -211,7 +211,7 @@ docs，即「完整部署」契约。若要只发布本地已提交的内容，
 
 ### 文档站（docs.limooo.cn）
 
-`Flask/docs/` 是一个**按子域分目录的容器**：`docs/` 存放 docs.limooo.cn 的
+`site/docs/` 是一个**按子域分目录的容器**：`docs/` 存放 docs.limooo.cn 的
 VitePress 根（每种语言每页一个 markdown 文件），
 `services/` 存放 services.limooo.cn 的价目表 CSV。
 语言码是 URL 的**最后**一段，内容页一律显式带上（`/README/zh-cn`、`/README/en-us`）；

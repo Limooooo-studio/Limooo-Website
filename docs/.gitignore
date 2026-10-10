@@ -1,0 +1,5 @@
+# VitePress 构建工作区（内容源本身要入库，产物与依赖不入库）
+node_modules/
+.vitepress/cache/
+.vitepress/dist/
+.DS_Store
