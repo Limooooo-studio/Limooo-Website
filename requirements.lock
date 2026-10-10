@@ -1,24 +1,30 @@
-# Limooo Python 运行时锁定清单（2026-08-27）
+# Limooo Python 运行时锁定清单（2026-08-27，2026-10-11 重新对齐）
 # 由本仓库 ops/requirements.txt 在干净 Python 3.14 环境中生成；
 # CI 与本地构建统一使用本文件锁定版本。
+#
+# 故意**不含** ruff / mypy：那两个是检查工具（在 ops/requirements.txt 里），
+# 不是运行时依赖。重新生成本文件时不要直接 `pip freeze`——那会把它们以及
+# 它们的传递依赖一起带进来，把构建 venv 撑大。生成方式：新建干净 venv →
+# `pip install -r ops/requirements.txt` → 只把该文件声明的 21 个包按
+# `名字==版本` 写回这里（大小写不敏感字母序）。
 blinker==1.9.0
 cairocffi==1.7.1
-CairoSVG==2.8.2
+CairoSVG==2.9.1
 certifi==2026.7.22
 cffi==2.1.1
-charset-normalizer==3.5.1
+charset-normalizer==3.5.2
 click==8.5.0
 cryptography==50.0.0
 cssselect2==0.10.1
 defusedxml==0.7.1
 Flask==3.1.3
-idna==3.19
+idna==3.20
 itsdangerous==2.2.0
 Jinja2==3.1.6
-MarkupSafe==3.0.3
+MarkupSafe==3.0.4
 pillow==12.3.0
-pycparser==3.0
+pycparser==3.11
 requests==2.34.2
 tinycss2==1.5.1
-urllib3==2.7.0
-Werkzeug==3.1.8
+urllib3==2.8.0
+Werkzeug==3.1.9
