@@ -292,11 +292,13 @@ export async function runSync(
       outcome,
       added: result.toAdd.length,
       removed: result.toRemove.length,
+      dryRun: options.dryRun === true,
     });
     logRun({
       outcome,
       added: result.toAdd.length,
       removed: result.toRemove.length,
+      dry_run: options.dryRun === true,
       duration_ms: runStartedAt() - startedAt,
     });
     return { ...result, runId };

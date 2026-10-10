@@ -1,0 +1,111 @@
+{
+  "captured_at": "2026-10-10T22:27:12.445723+00:00",
+  "zone": "limooo.cn",
+  "zone_id": "9fae48942c655fd03a4a483b4866c1c3",
+  "settings": {
+    "0rtt": {
+      "value": "on",
+      "editable": true
+    },
+    "always_use_https": {
+      "value": "on",
+      "editable": true
+    },
+    "automatic_https_rewrites": {
+      "value": "on",
+      "editable": true
+    },
+    "brotli": {
+      "value": "on",
+      "editable": true
+    },
+    "browser_check": {
+      "value": "on",
+      "editable": true
+    },
+    "challenge_ttl": {
+      "value": 1800,
+      "editable": true
+    },
+    "development_mode": {
+      "value": "off",
+      "editable": true
+    },
+    "early_hints": {
+      "value": "on",
+      "editable": true
+    },
+    "email_obfuscation": {
+      "value": "on",
+      "editable": true
+    },
+    "hotlink_protection": {
+      "value": "on",
+      "editable": true
+    },
+    "http2": {
+      "value": "on",
+      "editable": false
+    },
+    "http3": {
+      "value": "on",
+      "editable": true
+    },
+    "ipv6": {
+      "value": "on",
+      "editable": true
+    },
+    "min_tls_version": {
+      "value": "1.2",
+      "editable": true
+    },
+    "mirage": {
+      "value": "off",
+      "editable": true
+    },
+    "opportunistic_onion": {
+      "value": "on",
+      "editable": true
+    },
+    "polish": {
+      "value": "off",
+      "editable": true
+    },
+    "privacy_pass": {
+      "value": "on",
+      "editable": true
+    },
+    "pseudo_ipv4": {
+      "value": "add_header",
+      "editable": true
+    },
+    "rocket_loader": {
+      "value": "off",
+      "editable": true
+    },
+    "security_level": {
+      "value": "essentially_off",
+      "editable": true
+    },
+    "server_side_exclude": {
+      "value": "on",
+      "editable": true
+    },
+    "ssl": {
+      "value": "full",
+      "editable": true
+    },
+    "tls_1_3": {
+      "value": "zrt",
+      "editable": true
+    },
+    "webp": {
+      "value": "off",
+      "editable": false
+    },
+    "websockets": {
+      "value": "on",
+      "editable": true
+    }
+  }
+}

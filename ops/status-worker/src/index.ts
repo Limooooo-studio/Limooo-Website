@@ -19,6 +19,8 @@
 
 import { sendViaSmtp, type SmtpConfig } from "./smtp";
 import { runRetention } from "./retention";
+import { WATCHED_JOBS, readLatestRuns, runIssues, type RunIssue } from "./runwatch";
+import { LIST_NAME, checkBlocklistInvariant } from "./blocklist";
 
 /**
  * limooo 状态探针 Worker（docs/17 阶段 2）
@@ -28,12 +30,14 @@ import { runRetention } from "./retention";
  *   - 判 down 后交给 ProbeState（Durable Object）每 10 秒复查，恢复即记录
  *   - GET /api/status 供状态页取数；GET /_health 存活探针
  *
- * 告警邮件（阶段 3）在 maybeAlert() 处落地，现在只记录日志、不发送。
+ * 告警邮件（阶段 3）在 maybeAlert() 处落地；cron 失败可见性与封禁链路不变量
+ * 在每日任务里检查（runDailyChecks()，判定见 runwatch.ts / blocklist.ts）。
  *
- * 公网写接口只有两个：POST /run（跑一轮探针、写 D1）与 POST /alert-test
- * （真的发信）。本 Worker 挂在 status.limooo.cn 上、没有 Cloudflare Access，
- * 因此两者都要求 `Authorization: Bearer $STATUS_TOKEN`——见 authorized()。
- * **部署后必须 `wrangler secret put STATUS_TOKEN`，否则这两个接口一直是 401。**
+ * 公网写接口只有三个：POST /run（跑一轮探针、写 D1）、POST /alert-test
+ * （真的发信）与 POST /daily-checks（立刻跑一遍每日检查，真的会发信）。
+ * 本 Worker 挂在 status.limooo.cn 上、没有 Cloudflare Access，
+ * 因此三者都要求 `Authorization: Bearer $STATUS_TOKEN`——见 authorized()。
+ * **部署后必须 `wrangler secret put STATUS_TOKEN`，否则这些接口一直是 401。**
  */
 
 export interface Env {
@@ -58,6 +62,13 @@ export interface Env {
   FAIL_THRESHOLD?: string;
   RETRY_INTERVAL_S?: string;
   RETRY_WINDOW_S?: string;
+  /**
+   * 封禁列表不变量检查要读 Cloudflare IP List（blocklist.ts）。两个都没配时
+   * 这一步只记日志、不报警（fail-open），所以是可选绑定：
+   * `wrangler secret put CLOUDFLARE_API_TOKEN` / `... CLOUDFLARE_ACCOUNT_ID`。
+   */
+  CLOUDFLARE_API_TOKEN?: string;
+  CLOUDFLARE_ACCOUNT_ID?: string;
 }
 
 const UP = 1;
@@ -231,8 +242,17 @@ export async function scheduleRetry(
 // 未配置 binding / 收件人时只记日志、不报错，保证探针本身不受影响。
 // 文案的唯一来源是本文件的 ALERT_I18N（docs/22 W7-13）：
 // ops/email-templates/health-alert.i18n.json 已废弃，只留墓碑指向本文件。
+//
+// 三种告警共用这张表（四语）：探针 down/up（subject_down/up…）、cron 运行异常
+// （subject_runs…，判定见 runwatch.ts）与封禁列表漂移（subject_blocklist…，
+// 判定见 blocklist.ts）。新增 kind 时四语都要补齐——`ALERT_KINDS` 是 kind 的
+// 全量清单，`runwatch.test.ts` 逐语言逐 kind 校验键齐全，漏一门就红。
 
-const ALERT_I18N: Record<string, Record<string, string>> = {
+export const ALERT_KINDS = ["down", "up", "runs", "blocklist"] as const;
+export type AlertKind = (typeof ALERT_KINDS)[number];
+
+/** 四语文案表；导出只为让测试逐语言核对键齐全（运行时只用下面的取用函数）。 */
+export const ALERT_I18N: Record<string, Record<string, string>> = {
   "zh-cn": {
     subject_down: "[Limooo] 健康检查告警",
     subject_up: "[Limooo] 服务已恢复",
@@ -240,6 +260,14 @@ const ALERT_I18N: Record<string, Record<string, string>> = {
     title_up: "服务已恢复",
     intro_down: "Limooo 自动监控检测到以下异常，请尽快处理：",
     intro_up: "以下服务已恢复正常：",
+    subject_runs: "[Limooo] 定时任务异常",
+    title_runs: "发现定时任务异常",
+    intro_runs: "以下定时任务最近一次运行未成功（同一任务重复告警说明它一直没好）：",
+    hint_runs: "排查：D1 worker_runs 表里这个 job 的 error 列，或 Cloudflare Dashboard 的 Workers 日志。",
+    subject_blocklist: "[Limooo] 封禁列表不一致",
+    title_blocklist: "封禁 IP 列表漂移",
+    intro_blocklist: "Cloudflare IP List 与 D1 blocked_ips 的 active 集合不一致，边缘封禁已与权威数据不符：",
+    hint_blocklist: "排查：python3 ops/check_blocklist_sync.py（status-worker 每日 03:47 UTC 跑同一比对）。",
     view: "查看状态页",
     hint: "本邮件由 Limooo 自动监控发送。若持续收到，请检查对应服务，并在状态页确认恢复状态。",
   },
@@ -250,6 +278,14 @@ const ALERT_I18N: Record<string, Record<string, string>> = {
     title_up: "Service recovered",
     intro_down: "Limooo monitoring detected the following issue(s):",
     intro_up: "The following service(s) recovered:",
+    subject_runs: "[Limooo] Cron job failure",
+    title_runs: "A scheduled job did not succeed",
+    intro_runs: "The last recorded run of these jobs did not succeed (a repeat alert means it is still broken):",
+    hint_runs: "Triage: the error column for this job in the D1 worker_runs table, or the Workers logs in the Cloudflare dashboard.",
+    subject_blocklist: "[Limooo] Blocklist drift",
+    title_blocklist: "Blocked IP list has drifted",
+    intro_blocklist: "The Cloudflare IP List and the active rows of D1 blocked_ips disagree, so edge blocking no longer matches the authority:",
+    hint_blocklist: "Triage: python3 ops/check_blocklist_sync.py (this Worker runs the same comparison daily at 03:47 UTC).",
     view: "View status page",
     hint: "Sent automatically by Limooo monitoring. If this keeps arriving, check the service and confirm recovery on the status page.",
   },
@@ -260,6 +296,14 @@ const ALERT_I18N: Record<string, Record<string, string>> = {
     title_up: "サービスが復旧しました",
     intro_down: "Limooo の自動監視が以下の異常を検出しました：",
     intro_up: "以下のサービスが復旧しました：",
+    subject_runs: "[Limooo] 定期タスクの異常",
+    title_runs: "定期タスクが失敗しました",
+    intro_runs: "以下のタスクの最新実行が成功していません（繰り返し届く場合は未復旧です）：",
+    hint_runs: "調査：D1 worker_runs の error 列、または Cloudflare ダッシュボードの Workers ログ。",
+    subject_blocklist: "[Limooo] ブロックリストの不一致",
+    title_blocklist: "ブロック IP リストが乖離",
+    intro_blocklist: "Cloudflare IP List と D1 blocked_ips の active 集合が一致していません。エッジのブロックが権威データと食い違っています：",
+    hint_blocklist: "調査：python3 ops/check_blocklist_sync.py（本 Worker も毎日 03:47 UTC に同じ照合を実行します）。",
     view: "ステータスページを表示",
     hint: "本メールは Limooo の自動監視から送信されています。",
   },
@@ -270,6 +314,14 @@ const ALERT_I18N: Record<string, Record<string, string>> = {
     title_up: "서비스가 복구되었습니다",
     intro_down: "Limooo 자동 모니터링이 다음 이상을 감지했습니다:",
     intro_up: "다음 서비스가 복구되었습니다:",
+    subject_runs: "[Limooo] 예약 작업 실패",
+    title_runs: "예약 작업이 성공하지 못했습니다",
+    intro_runs: "다음 작업의 최근 실행이 성공하지 못했습니다(반복 수신되면 아직 복구되지 않은 것입니다):",
+    hint_runs: "확인: D1 worker_runs의 error 열 또는 Cloudflare 대시보드의 Workers 로그.",
+    subject_blocklist: "[Limooo] 차단 목록 불일치",
+    title_blocklist: "차단 IP 목록이 어긋났습니다",
+    intro_blocklist: "Cloudflare IP List와 D1 blocked_ips의 active 집합이 일치하지 않습니다. 엣지 차단이 권위 데이터와 다릅니다:",
+    hint_blocklist: "확인: python3 ops/check_blocklist_sync.py (이 Worker도 매일 03:47 UTC에 같은 비교를 실행합니다).",
     view: "상태 페이지 보기",
     hint: "이 메일은 Limooo 자동 모니터링에서 발송되었습니다.",
   },
@@ -281,7 +333,65 @@ export interface AlertEmail {
   html: string;
 }
 
-/** 构造告警邮件（纯函数，便于测试与预览）。 */
+/**
+ * 告警正文里的一行：`<name> — <detail>`。
+ * 探针告警永远只有一行（name=探针名）；每日检查告警可能多行（每个出问题的
+ * job / 每条漂移各一行），因此模板必须支持多行。
+ */
+export interface AlertItem {
+  name: string;
+  detail: string;
+}
+
+interface AlertBlock {
+  subject: string;
+  title: string;
+  intro: string;
+  hint: string;
+  /** 左侧色条与链接颜色：故障红 / 恢复青。 */
+  color: string;
+}
+
+/**
+ * 告警邮件的唯一渲染模板（纯函数）。三个场景（探针 down/up、cron 运行异常、
+ * 封禁列表漂移）都从这里出，避免出现第二套模板后各自漂移。
+ *
+ * 单行输入下 HTML 与重构前逐字一致（既有测试钉着这一点）。纯文本正文多了一行
+ * 时间戳：原来只有 HTML 里有 `when`，而 webhook（飞书）与 SMTP 纯文本走的都是
+ * 这一份——「什么时候」是告警的基本信息，不能在纯文本通道里丢掉。
+ */
+function renderAlert(
+  t: Record<string, string>,
+  block: AlertBlock,
+  items: AlertItem[],
+  at: number,
+): AlertEmail {
+  const when = new Date(at * 1000).toISOString().replace("T", " ").slice(0, 19) + " UTC";
+  const text =
+    `${block.title}\n\n${block.intro}\n\n` +
+    items.map((i) => `- ${i.name}: ${i.detail}`).join("\n") +
+    `\n\n${when}\n\n${t.view}: https://status.limooo.cn/\n\n${block.hint}\n`;
+  const rows = items
+    .map(
+      (i) =>
+        `<tr><td style="padding:10px 12px;border:1px solid #e4e4e7;border-left:3px solid ${block.color};font-size:14px">` +
+        `<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${block.color};margin-right:8px"></span>` +
+        `${esc(i.name)} — ${esc(i.detail)}</td></tr>`,
+    )
+    .join("");
+  const html =
+    `<div style="font-family:Inter,system-ui,-apple-system,sans-serif;max-width:560px">` +
+    `<h1 style="font-size:19px;margin:0 0 8px;color:#11181c">${esc(block.title)}</h1>` +
+    `<p style="color:#52525b;font-size:14px;margin:0 0 16px">${esc(block.intro)}</p>` +
+    `<table style="width:100%;border-collapse:collapse">${rows}</table>` +
+    `<p style="font-size:13px;color:#52525b;margin:14px 0 0">${esc(when)}</p>` +
+    `<p style="margin:16px 0 0"><a href="https://status.limooo.cn/" style="color:${block.color};font-size:14px">${esc(t.view)}</a></p>` +
+    `<p style="color:#71717a;font-size:12px;margin:18px 0 0;border-top:1px solid #e4e4e7;padding-top:12px">${esc(block.hint)}</p>` +
+    `</div>`;
+  return { subject: block.subject, text, html };
+}
+
+/** 构造探针告警邮件（纯函数，便于测试与预览）。 */
 export function buildAlertEmail(
   lang: string,
   kind: "down" | "up",
@@ -290,25 +400,54 @@ export function buildAlertEmail(
   at: number,
 ): AlertEmail {
   const t = ALERT_I18N[lang] ?? ALERT_I18N["zh-cn"];
-  const subject = `${kind === "down" ? t.subject_down : t.subject_up} · ${probeName}`;
-  const title = kind === "down" ? t.title_down : t.title_up;
-  const intro = kind === "down" ? t.intro_down : t.intro_up;
-  const color = kind === "down" ? "#dc2626" : "#05A5A6";
-  const when = new Date(at * 1000).toISOString().replace("T", " ").slice(0, 19) + " UTC";
-  const text = `${title}\n\n${intro}\n\n- ${probeName}: ${msg}\n\n${t.view}: https://status.limooo.cn/\n\n${t.hint}\n`;
-  const html =
-    `<div style="font-family:Inter,system-ui,-apple-system,sans-serif;max-width:560px">` +
-    `<h1 style="font-size:19px;margin:0 0 8px;color:#11181c">${esc(title)}</h1>` +
-    `<p style="color:#52525b;font-size:14px;margin:0 0 16px">${esc(intro)}</p>` +
-    `<table style="width:100%;border-collapse:collapse"><tr>` +
-    `<td style="padding:10px 12px;border:1px solid #e4e4e7;border-left:3px solid ${color};font-size:14px">` +
-    `<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${color};margin-right:8px"></span>` +
-    `${esc(probeName)} — ${esc(msg)}</td></tr></table>` +
-    `<p style="font-size:13px;color:#52525b;margin:14px 0 0">${esc(when)}</p>` +
-    `<p style="margin:16px 0 0"><a href="https://status.limooo.cn/" style="color:${color};font-size:14px">${esc(t.view)}</a></p>` +
-    `<p style="color:#71717a;font-size:12px;margin:18px 0 0;border-top:1px solid #e4e4e7;padding-top:12px">${esc(t.hint)}</p>` +
-    `</div>`;
-  return { subject, text, html };
+  const down = kind === "down";
+  return renderAlert(
+    t,
+    {
+      subject: `${down ? t.subject_down : t.subject_up} · ${probeName}`,
+      title: down ? t.title_down : t.title_up,
+      intro: down ? t.intro_down : t.intro_up,
+      hint: t.hint,
+      color: down ? "#dc2626" : "#05A5A6",
+    },
+    [{ name: probeName, detail: msg }],
+    at,
+  );
+}
+
+/** 主题行长度上限，避免一条长 error 把主题撑爆（正文里有完整摘要）。 */
+export const ALERT_SUBJECT_CHARS = 120;
+
+/**
+ * 构造**每日检查**告警（cron 运行异常 / 封禁列表漂移）。复用同一张 ALERT_I18N
+ * 与同一个渲染模板，只是多了「一行一个问题」的列表。
+ *
+ * `subjectNote` 供调用方补一个一眼可见的摘要（例如 `to_add=1 to_remove=0`）；
+ * 不传时用各项名字（例如 job 名）拼。
+ */
+export function buildCheckAlertEmail(
+  lang: string,
+  kind: "runs" | "blocklist",
+  items: AlertItem[],
+  at: number,
+  subjectNote = "",
+): AlertEmail {
+  const t = ALERT_I18N[lang] ?? ALERT_I18N["zh-cn"];
+  const suffix = subjectNote || items.map((i) => i.name).join(", ");
+  const subject = `${t[`subject_${kind}`]} · ${suffix}`.slice(0, ALERT_SUBJECT_CHARS);
+  return renderAlert(
+    t,
+    {
+      subject,
+      title: t[`title_${kind}`],
+      intro: t[`intro_${kind}`],
+      hint: t[`hint_${kind}`] ?? t.hint,
+      // 两种检查报出来的都是「需要人去处理」的状态，用故障红。
+      color: "#dc2626",
+    },
+    items,
+    at,
+  );
 }
 
 export interface DeliverResult {
@@ -458,6 +597,173 @@ export async function maybeAlert(
   } catch (err) {
     console.error(JSON.stringify({ event: "probe_alert_failed", message: String(err) }));
   }
+}
+
+// ── 每日检查（cron `47 3 * * *`） ─────────────────────────────────
+//
+// 两个 cron Worker 的运行记录（`worker_runs`，迁移 018）写下来了但**没有读者**：
+// 同步/归档失败只留在表里，不会通知任何人。这里补上读者，顺带把另一条只有手工
+// 入口的不变量（Cloudflare IP List == D1 `blocked_ips` active 集合）也搬进自动化。
+//
+// 位置是刻意的：`47 3 * * *` 排在归档（`0 0 * * *`）与同步（`30 3 * * *`）之后，
+// 读到的一定是当天两个任务的最终结果。**绝不放进每分钟那个 cron**——那是探针的
+// 节奏，把每日检查塞进去等于每天读 1440 次 D1（AGENTS.md「D1 读取预算」）。
+//
+// 三步全部 fail-open：读不到（表不存在/没配 secret/API 失败）只记日志、不报警，
+// 更不能把每日任务里的 D1 保留清理带倒——所以清理先跑，检查后跑。
+
+/** 每日检查里单步的结果。`ok=false` 表示「这一步没跑成」，不是「没有问题」。 */
+export interface CheckStep {
+  ok: boolean;
+  /** 发现的问题条数（0 = 正常）。 */
+  issues: number;
+  alerted: boolean;
+  reason?: string;
+}
+
+export interface DailyCheckResult {
+  runs: CheckStep;
+  blocklist: CheckStep;
+}
+
+/**
+ * 步骤 1：`worker_runs` 里每个 job 的最近一次运行是否成功。
+ *
+ * 查询、判定与阈值都在 `runwatch.ts`（含「为什么不是 GROUP BY」的成本证据）。
+ * 这里只负责：读一次 → 有问题就发**一条**汇总告警 → 结构化日志。
+ */
+export async function checkWorkerRuns(
+  env: Env,
+  now: number = Math.floor(Date.now() / 1000),
+): Promise<CheckStep> {
+  try {
+    const latest = await readLatestRuns(env.DB);
+    if (latest.error) {
+      // 「读不到」绝不能当成「没有记录」，更不能报警——那是运维噪音。
+      console.error(JSON.stringify({ event: "worker_runs_unreadable", reason: latest.error }));
+      return { ok: false, issues: 0, alerted: false, reason: latest.error };
+    }
+
+    const issues: RunIssue[] = runIssues(latest.rows, now);
+    const missing = WATCHED_JOBS.filter((job) => !latest.rows.some((r) => r.job === job));
+    console.log(
+      JSON.stringify({
+        event: "worker_runs_checked",
+        jobs: WATCHED_JOBS.length,
+        found: latest.rows.length,
+        missing,
+        issues: issues.length,
+      }),
+    );
+    if (!issues.length) return { ok: true, issues: 0, alerted: false };
+
+    const mail = buildCheckAlertEmail(
+      env.ALERT_LANG ?? "zh-cn",
+      "runs",
+      issues.map((i) => ({ name: i.job, detail: i.detail })),
+      now,
+    );
+    const result = await deliverAlert(env, mail);
+    console.log(
+      JSON.stringify({
+        event: result.sent ? "worker_runs_alert_sent" : "worker_runs_alert_skipped",
+        jobs: issues.map((i) => i.job),
+        outcomes: issues.map((i) => i.outcome),
+        via: result.via,
+        reason: result.reason,
+      }),
+    );
+    return { ok: true, issues: issues.length, alerted: result.sent };
+  } catch (err) {
+    // readLatestRuns 已经自己兜了；这层是双保险，保证「检查」永远不带倒每日任务。
+    console.error(JSON.stringify({ event: "worker_runs_check_failed", message: String(err) }));
+    return { ok: false, issues: 0, alerted: false, reason: String(err).slice(0, 140) };
+  }
+}
+
+/** 漂移清单里最多列几条明细（再多就只报数字了）。 */
+export const DRIFT_SAMPLE_ITEMS = 3;
+
+/**
+ * 步骤 2：Cloudflare IP List == D1 `blocked_ips` (active=1)。
+ *
+ * 与 `ops/check_blocklist_sync.py` 是两个入口、同一条不变量：脚本给人手工排查
+ * （还能 `--record` 写回运行记录），这里给自动化。**一致时不发告警**——每天一条
+ * 「一切正常」是纯噪音，只会让人把告警静音。
+ */
+export async function checkBlocklistRuns(env: Env): Promise<CheckStep> {
+  try {
+    const res = await checkBlocklistInvariant(env);
+    if (!res.ok || !res.snapshot) {
+      // 缺凭据是最常见的一种：别人 clone 后没配 secret，这里只记日志。
+      console.log(
+        JSON.stringify({ event: "blocklist_invariant_skipped", reason: res.reason ?? "unknown" }),
+      );
+      return { ok: false, issues: 0, alerted: false, reason: res.reason };
+    }
+
+    const { desired, actual, diff, listMissing } = res.snapshot;
+    const { toAdd, toRemove } = diff;
+    console.log(
+      JSON.stringify({
+        event: "blocklist_invariant_checked",
+        desired: desired.length,
+        actual: actual.length,
+        to_add: toAdd.length,
+        to_remove: toRemove.length,
+        list_missing: listMissing,
+      }),
+    );
+    if (!toAdd.length && !toRemove.length) return { ok: true, issues: 0, alerted: false };
+
+    const sample = (list: string[]): string =>
+      list.length > DRIFT_SAMPLE_ITEMS
+        ? `${list.slice(0, DRIFT_SAMPLE_ITEMS).join(", ")} (+${list.length - DRIFT_SAMPLE_ITEMS} more)`
+        : list.join(", ");
+    const detail =
+      `desired=${desired.length} actual=${actual.length} ` +
+      `to_add=${toAdd.length} to_remove=${toRemove.length}` +
+      (toAdd.length ? ` · add: ${sample(toAdd)}` : "") +
+      (toRemove.length ? ` · remove: ${sample(toRemove)}` : "") +
+      (listMissing ? ` · list ${LIST_NAME} not found` : "");
+
+    const mail = buildCheckAlertEmail(
+      env.ALERT_LANG ?? "zh-cn",
+      "blocklist",
+      [{ name: LIST_NAME, detail }],
+      Math.floor(Date.now() / 1000),
+      `to_add=${toAdd.length} to_remove=${toRemove.length}`,
+    );
+    const result = await deliverAlert(env, mail);
+    console.log(
+      JSON.stringify({
+        event: result.sent ? "blocklist_alert_sent" : "blocklist_alert_skipped",
+        to_add: toAdd.length,
+        to_remove: toRemove.length,
+        via: result.via,
+        reason: result.reason,
+      }),
+    );
+    return { ok: true, issues: toAdd.length + toRemove.length, alerted: result.sent };
+  } catch (err) {
+    console.error(JSON.stringify({ event: "blocklist_check_failed", message: String(err) }));
+    return { ok: false, issues: 0, alerted: false, reason: String(err).slice(0, 140) };
+  }
+}
+
+/**
+ * 每日检查总入口，由 `scheduled()` 的 `47 3 * * *` 分支与运维接口
+ * `POST /daily-checks` 共用（后者是为了不等到 03:47 也能验证这条链路）。
+ * 两步彼此独立：一步失败不影响另一步。
+ */
+export async function runDailyChecks(
+  env: Env,
+  now: number = Math.floor(Date.now() / 1000),
+): Promise<DailyCheckResult> {
+  const runs = await checkWorkerRuns(env, now);
+  const blocklist = await checkBlocklistRuns(env);
+  console.log(JSON.stringify({ event: "daily_checks", runs, blocklist }));
+  return { runs, blocklist };
 }
 
 export async function runAll(env: Env): Promise<number> {
@@ -758,11 +1064,13 @@ export async function renderStatusPage(env: Env, lang: string): Promise<string> 
 }
 
 /**
- * 运维写接口（/run、/alert-test）的鉴权：比对 `Authorization: Bearer <STATUS_TOKEN>`。
+ * 运维写接口（/run、/alert-test、/daily-checks）的鉴权：比对
+ * `Authorization: Bearer <STATUS_TOKEN>`。
  *
- * 这个 Worker 挂在公网（status.limooo.cn）且没有 Cloudflare Access，而这两个接口
+ * 这个 Worker 挂在公网（status.limooo.cn）且没有 Cloudflare Access，而这三个接口
  * 代价都不小——/run 会写 D1（探针 × heartbeats/probe_state/probe_uptime_daily，
- * 循环调用能烧掉每日写入额度），/alert-test 会真的发告警信。共享密钥是唯一闸门。
+ * 循环调用能烧掉每日写入额度），/alert-test 与 /daily-checks 会真的发告警信。
+ * 共享密钥是唯一闸门。
  *
  * 与 ops/sync-worker 的 authorized() 同源：**未配置 STATUS_TOKEN 时 fail-closed**
  * （拒绝一切，而不是「没设密码就等于开放」）；长度相等才逐字符比较，避免提前返回
@@ -808,7 +1116,10 @@ export default {
     const url = new URL(request.url);
     // 写接口先过闸：未授权时连 D1 都不碰，第三方页面的简单 POST 因此打不到探针与告警。
     const isOpsWrite =
-      request.method === "POST" && (url.pathname === "/run" || url.pathname === "/alert-test");
+      request.method === "POST" &&
+      (url.pathname === "/run" ||
+        url.pathname === "/alert-test" ||
+        url.pathname === "/daily-checks");
     if (isOpsWrite && !authorized(request, env)) {
       console.warn(JSON.stringify({ event: "status_ops_unauthorized", path: url.pathname }));
       return Response.json(
@@ -863,6 +1174,15 @@ export default {
       return Response.json({ ran, status: await statusPayload(env) });
     }
 
+    // 立刻跑一遍每日检查（worker_runs + 封禁链路不变量）。存在的理由：03:47 UTC
+    // 那个 cron 一天只有一次，改完/配完 secret 后没法当场验证这条链路。
+    // 与 scheduled 走**同一个** runDailyChecks()，所以它会真的发告警。
+    if (url.pathname === "/daily-checks" && request.method === "POST") {
+      return Response.json(await runDailyChecks(env), {
+        headers: { "Cache-Control": "no-store" },
+      });
+    }
+
     // 告警邮件预览（不发信，用于核对文案与排样）
     if (url.pathname === "/alert-preview") {
       const kind = url.searchParams.get("kind") === "up" ? "up" : "down";
@@ -901,9 +1221,12 @@ export default {
   },
 
   async scheduled(event: ScheduledController, env: Env): Promise<void> {
-    // 每分钟：探针；每日 03:47：D1 保留清理（迁移自 VPS 的 prune_d1.py）
+    // 每分钟：探针；每日 03:47：D1 保留清理（迁移自 VPS 的 prune_d1.py）+ 每日检查
     if (event.cron === "47 3 * * *") {
+      // 顺序是有意的：保留清理是防爆库的关键路径，先跑；每日检查（worker_runs
+      // 最近一次运行 + 封禁链路不变量）整段 fail-open，即使全挂也不影响清理。
       await runRetention(env);
+      await runDailyChecks(env);
       return;
     }
     await runAll(env);

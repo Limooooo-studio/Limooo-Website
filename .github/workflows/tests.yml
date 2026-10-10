@@ -21,6 +21,7 @@ jobs:
       - run: python -m ruff check src ops tests
       - run: python -m mypy src
       - run: python -m pytest -q --cov=src --cov-report=term-missing
+      - run: python ops/check_config_contract.py
       - run: python ops/check_security_headers.py
       - run: python ops/check_license_headers.py
       - run: python ops/readme_facts.py --check

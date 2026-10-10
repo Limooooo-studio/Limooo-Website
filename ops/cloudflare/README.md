@@ -9,8 +9,8 @@ are **not** written here; they come from the sources listed below.
 | Pages project | `limooo` | `site/wrangler.toml` | Build output `public`, serves `limooo.cn` and its subdomains |
 | Pages Functions | `functions/**` | Git | Gate, login, Apple Account, visitor stats, Ray lookup |
 | D1 database | `DB` binding | `site/wrangler.toml` (`database_id`) | Shared by Pages and the cron Workers |
-| D1 migrations | `ops/migrations/*.sql` | Git | Entry point `ops/migrate_d1.sh`; `018_worker_runs.sql` holds the Worker run history |
-| Worker: probes / status page | `limooo-status` | `ops/status-worker/wrangler.toml` | Probes every minute + 10 s re-check after down; `status.limooo.cn`; D1 retention daily at 03:47 |
+| D1 migrations | `ops/migrations/*.sql` | Git | Entry point `ops/migrate_d1.sh`; `018_worker_runs.sql` / `019_worker_runs_dry_run.sql` hold the Worker run history |
+| Worker: probes / status page | `limooo-status` | `ops/status-worker/wrangler.toml` | Probes every minute + 10 s re-check after down; `status.limooo.cn`; D1 retention **and the daily checks** (run history + blocklist invariant) daily at 03:47 |
 | Worker: blocklist sync | `limooo-blocklist-sync` | `ops/sync-worker/wrangler.toml` | Daily 03:30, D1 active rows -> Cloudflare IP List; run history + `GET /?health=1` (see "Blocklist chain") |
 | Worker: image watermark | `image-watermark` | `ops/image-watermark/wrangler.toml` | `image.limooo.cn/*` normalising proxy, `/portfolio/*` always returns the watermark (A2) |
 | Worker: D1 archive | `limooo-d1-archive` | `ops/d1-archive/wrangler.toml` | Daily 00:00 archive of the previous UTC day into `limooo-analytics`; run history + `GET /?health=1` (see "Worker run history") |
@@ -18,8 +18,9 @@ are **not** written here; they come from the sources listed below.
 | R2 bucket (fonts) | `limooo-fonts` | `ops/fonts/README.md` | Public gate-font subset at `fonts.limooo.cn` |
 | WAF IP List | `limooo_blocklist` | `ops/sync-worker` | Cloudflare List, referenced by WAF rules |
 | DNS zone | `limooo.cn` | Cloudflare Dashboard | CNAMEs to `limooo.pages.dev`, see AGENTS.md |
-| WAF rules | custom rules | Cloudflare Dashboard | `ip.src in $limooo_blocklist`, low-risk `js_challenge`; the custom-firewall phase is currently **empty** and `ops/waf/rules.snapshot.json` keeps the historical rule set for rebuilds |
+| WAF rules | custom rules | Cloudflare Dashboard | `ip.src in $limooo_blocklist`, low-risk `js_challenge`; the custom-firewall phase is currently **empty**, and `ops/waf/rules.snapshot.json` is a refresh-time mirror of that empty phase (rules removed in the Dashboard live only in git history) |
 | Cache Rules | `Limooo public cache` | Cloudflare API / Dashboard | Public HTML 300 s; `/static` and favicon 1 year |
+| Zone settings | `limooo.cn` settings | Cloudflare Dashboard | HSTS/HTTPS enforcement, minimum TLS, Security Level, Web Analytics injection. `ops/zone-settings.snapshot.json` + `ops/zone_settings.py` pin the externally observable ones (see below) |
 
 ## Dashboard-only resources (this repository is not fully reproducible)
 
@@ -41,6 +42,37 @@ fresh `wrangler deploy` will not recreate them:
 
 Treat the Dashboard as authoritative for those; this file is the inventory that makes
 them traceable, not a reproducible manifest.
+
+## Zone settings (`ops/zone-settings.snapshot.json`)
+
+Zone-level settings change externally observable behaviour — whether `http://` redirects,
+the minimum TLS version, whether Cloudflare injects its Web Analytics beacon — yet nothing
+in this repository pinned them, so a Dashboard change could alter the live site with no
+reviewable diff.
+
+`ops/zone_settings.py` is the read-only counterpart to `ops/waf_rules.sh`:
+
+```
+python3 ops/zone_settings.py --dry-run    # offline: print the committed snapshot
+python3 ops/zone_settings.py --show       # live: print current values, write nothing
+python3 ops/zone_settings.py --snapshot   # live: refresh the snapshot, print what changed
+```
+
+The snapshot covers the keys in `SNAPSHOT_KEYS` (26 settings: transport, TLS, caching,
+hotlink and bot-protection switches). It records `value` and `editable` per key, so a
+plan-gated or renamed setting shows up as `unavailable` instead of vanishing.
+`tests/test_zone_settings.py` fails if the snapshot drifts from `SNAPSHOT_KEYS` or if a
+key the review logic guards disappears.
+
+`--show` and `--snapshot` print a `<- review` note when a setting holds the *unwanted*
+value (for example `ssl = flexible`, `development_mode = on`). They deliberately do not
+flag correct values: the first draft flagged `always_use_https=on`, which is how a review
+note turns into noise.
+
+**One open item**: `security_level` is `essentially_off`, which disables Cloudflare's
+threat score, IP reputation and Browser Integrity Check for the whole zone. The Worker
+gate and the `blocked_ips` blocklist remain the only filters, and no record anywhere says
+this was deliberate. Flagged in `## Open items / external confirmations`.
 
 ## Pages environment variables (key names only, never values)
 
@@ -93,6 +125,16 @@ active = 1` (`idx_blocked_ips_active`) and one `LIMIT 1` per job on `worker_runs
 read-only: it only ever issues `GET` on the Cloudflare side, and `--record` (opt-in)
 appends at most one row to `worker_runs`.
 
+**This check also runs by itself.** `ops/status-worker` performs the same
+comparison once a day inside its `47 3 * * *` task (TypeScript -- a Worker has no
+python): `SELECT cidr FROM blocked_ips WHERE active = 1` (one indexed row) against
+one page of IP List items, alerted only when `to_add`/`to_remove` is non-empty. The
+script stays the manual entry point -- it can `--record`, prints the full delta and
+handles paging the same way -- and both sides use one definition of the invariant
+(the `/32` and `/128` normalisation is duplicated in `ops/status-worker/src/blocklist.ts`
+on purpose; change one, change the other). Missing `CLOUDFLARE_API_TOKEN` /
+`CLOUDFLARE_ACCOUNT_ID` on the status Worker is a logged skip, never an alert.
+
 **Not implemented on purpose.** `ops/sync-worker` is the only job that compares the
 two layers. A Cloudflare-side change that silently drops entries (account migration,
 API regression, someone editing the list by hand) still leaves both sides "consistent"
@@ -114,12 +156,26 @@ that gap:
 | `outcome` | `running`, `ok`, `skipped` (no credentials), or `failed` |
 | `added` / `removed` | Delta of that run (`added` also carries the row total for `d1_archive`) |
 | `error` | Failure text, verbatim |
+| `dry_run` | 1 = the run only computed the diff and sent no write request (`?dry-run=1`); 0 = a real sync. Added by `019_worker_runs_dry_run.sql`, because otherwise a rehearsal is indistinguishable from a sync that really ran -- the exact question this table exists to answer |
 
 Both Workers also emit a structured single-line JSON log with `outcome:"failed"` on
 failure, so `wrangler tail` and the Workers log panel can be searched for it. The
 Worker hot paths (sync, archive) only ever **write** to this table; the reads happen in
-the `?health=1` endpoint and in the operator script, which keeps the D1 read budget
-untouched (see AGENTS.md "D1 read budget").
+the `?health=1` endpoint, in the operator script and in the daily check below, which
+keeps the D1 read budget untouched (see AGENTS.md "D1 read budget").
+
+**Somebody is now watching.** A record nobody reads is not visibility. Since the
+daily checks landed in `ops/status-worker`, cron failures no longer just sit in the
+table: `limooo-status` reads the latest row per job at 03:47 UTC -- after the archive
+(`0 0 * * *`) and the sync (`30 3 * * *`) have both recorded their run -- and pushes
+**one** alert through the normal channel (webhook -> Email binding -> SMTP) whenever
+the outcome is not `ok`/`skipped`, or a row is stuck in `running` for more than two
+hours. Cost is one index seek per job per day (`idx_worker_runs_job_started`,
+measured `rows_read=2` for two jobs); this table is never read from the every-minute
+probe cron, and adding it to the status page was rejected on purpose (that page is
+re-rendered every minute per language, which would turn a 2-row read into thousands
+of rows per day). `POST /daily-checks` on `status.limooo.cn` runs the same check on
+demand.
 
 Health endpoints (both require `Authorization: Bearer <SYNC_TOKEN>` and fail closed
 with 401 when the secret is unset):
@@ -274,3 +330,12 @@ version 5)`) -- an index added inside it would never run. Index changes need a n
   Dashboard; this file only keeps those states traceable.
 - A2 image ownership is live: originals are private (`limooo-originals`), the public
   side serves only watermark variants and thumbnails.
+- **`security_level` is `essentially_off`** (measured 2026-10-11, `python3 ops/zone_settings.py
+  --show`). That disables Cloudflare's threat score, IP reputation and Browser Integrity
+  Check for the whole zone, leaving the Worker gate and the `blocked_ips` blocklist as the
+  only filters. No record anywhere says this was deliberate, and no evidence of active
+  attack traffic was found either (the analytics endpoint is not readable with the current
+  API token). Needs a human decision: raise it, or record why it is off.
+- `identity.limooo.cn` still has a proxied `CNAME` to `limooo.pages.dev` but returns 404,
+  and nothing in the repository or the docs references it (it is an authentik-era
+  leftover). Dead hostname; removal is a Dashboard action.

@@ -29,7 +29,14 @@
 #
 # Step set (identical to .github/workflows/tests.yml -- keep both in sync):
 #   typescript: build / typecheck / migrate --dry-run / npm test / coverage (report only)
-#   python:     ruff / mypy / pytest / security headers / license headers / readme_facts.py --check
+#   python:     ruff / mypy / pytest / config contract / security headers / license headers
+#               / readme_facts.py --check
+#
+# config contract vs. artifact drift are two different gates, keep both:
+#   check_config_contract.py  -- contract <-> src/config.py <-> functions/_lib/config.ts
+#                                semantically agree (a field added to the contract but
+#                                never consumed fails here, and build does not complain)
+#   the inline check below    -- after build, no generated file differs from git (drift)
 #
 # ruff and mypy are probed, not required (same treatment as pytest-cov):
 # installed -> run and fail the gate; missing -> one [ci] SKIP line, no failure.
@@ -302,6 +309,8 @@ if [ "$RUN_PY" = 1 ]; then
         echo "[ci] SKIP coverage: pytest-cov is not installed (pip install pytest-cov)"
         (cd "$TARGET" && "$PYTHON_BIN" -m pytest -q)
     fi
+    echo "[ci] python ops/check_config_contract.py"
+    (cd "$TARGET" && "$PYTHON_BIN" ops/check_config_contract.py)
     echo "[ci] python ops/check_security_headers.py"
     (cd "$TARGET" && "$PYTHON_BIN" ops/check_security_headers.py)
     echo "[ci] python ops/check_license_headers.py"

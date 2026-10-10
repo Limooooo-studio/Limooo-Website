@@ -63,8 +63,8 @@ function d1Stub(options: { failSql?: RegExp } = {}) {
           run: async () => {
             guard();
             if (/UPDATE worker_runs/.test(sql)) {
-              const [finished_at, outcome, added, removed, error, id] = call.values;
-              latest = { id, job: "d1_archive", finished_at, outcome, added, removed, error };
+              const [finished_at, outcome, added, removed, error, dry_run, id] = call.values;
+              latest = { id, job: "d1_archive", finished_at, outcome, added, removed, error, dry_run };
             }
             return { success: true };
           },
@@ -135,6 +135,8 @@ describe("d1 archive", () => {
     const update = f.stub.calls.find((c) => /UPDATE worker_runs/.test(c.sql));
     expect(update!.values[1]).toBe("ok");
     expect(update!.values[2]).toBe(4);
+    // 归档没有演练模式，dry_run 必须是 0。
+    expect(update!.values[5]).toBe(0);
   });
 
   it("records a failed run and keeps the error text when archiving throws", async () => {

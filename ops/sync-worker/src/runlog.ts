@@ -48,6 +48,8 @@ export interface RunRow {
   added: number | null;
   removed: number | null;
   error: string | null;
+  /** 1 = 只算了差异、没对 Cloudflare 发写请求（`?dry-run=1`）。 */
+  dry_run: number;
 }
 
 export interface RunUpdate {
@@ -56,6 +58,7 @@ export interface RunUpdate {
   added?: number;
   removed?: number;
   error?: string | null;
+  dryRun?: boolean;
 }
 
 /**
@@ -134,7 +137,7 @@ export async function updateRun(
     await db
       .prepare(
         `UPDATE worker_runs
-            SET finished_at = ?, outcome = ?, added = ?, removed = ?, error = ?
+            SET finished_at = ?, outcome = ?, added = ?, removed = ?, error = ?, dry_run = ?
           WHERE id = ?`,
       )
       .bind(
@@ -143,6 +146,7 @@ export async function updateRun(
         update.added ?? null,
         update.removed ?? null,
         update.error === undefined ? null : update.error,
+        update.dryRun ? 1 : 0,
         runId,
       )
       .run();
@@ -164,7 +168,7 @@ export async function updateRun(
 export async function lastRun(db: RunDatabase, job: string): Promise<RunRow | null> {
   const result = await db
     .prepare(
-      `SELECT id, job, started_at, finished_at, outcome, added, removed, error
+      `SELECT id, job, started_at, finished_at, outcome, added, removed, error, dry_run
          FROM worker_runs
         WHERE job = ?
         ORDER BY started_at DESC, id DESC

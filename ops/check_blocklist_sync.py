@@ -182,7 +182,7 @@ def query_last_runs(cfg: dict[str, str], jobs: list[str]) -> tuple[dict[str, dic
         # job 名来自本脚本内部常量/命令行，取值受控；仍然加引号转义以防万一。
         escaped = job.replace("'", "''")
         sql = (
-            "SELECT job, started_at, finished_at, outcome, added, removed, error "
+            "SELECT job, started_at, finished_at, outcome, added, removed, error, dry_run "
             f"FROM worker_runs WHERE job = '{escaped}' "
             "ORDER BY started_at DESC, id DESC LIMIT 1"
         )
@@ -213,6 +213,8 @@ def format_run(job: str, row: dict | None) -> str:
         f"  {job:<22} {started:<17} outcome={outcome:<8} "
         f"added={' -' if added is None else added} removed={' -' if removed is None else removed}"
     )
+    if row.get("dry_run"):
+        line += " dry_run=1"
     error = row.get("error")
     if error:
         line += f" error={str(error)[:160]}"
@@ -236,8 +238,8 @@ def record_check(cfg: dict[str, str], outcome: str, detail: str) -> str | None:
     now = int(dt.datetime.now(dt.UTC).timestamp())
     escaped = detail.replace("'", "''")
     sql = (
-        "INSERT INTO worker_runs (job, started_at, finished_at, outcome, error) "
-        f"VALUES ('{CHECK_JOB}', {now}, {now}, '{outcome}', '{escaped}')"
+        "INSERT INTO worker_runs (job, started_at, finished_at, outcome, error, dry_run) "
+        f"VALUES ('{CHECK_JOB}', {now}, {now}, '{outcome}', '{escaped}', 0)"
     )
     try:
         d1_client.d1_query(cfg, sql)
@@ -338,6 +340,7 @@ def main() -> int:
                         "added": row.get("added"),
                         "removed": row.get("removed"),
                         "error": row.get("error"),
+                        "dry_run": row.get("dry_run"),
                     }
                 )
                 for job, row in runs.items()

@@ -324,8 +324,8 @@ const mockRunDb = () => {
             },
             run: async () => {
               if (/UPDATE worker_runs/.test(sql)) {
-                const [finished_at, outcome, added, removed, error, id] = call.values;
-                latest = { id, job: "blocklist_sync", finished_at, outcome, added, removed, error };
+                const [finished_at, outcome, added, removed, error, dry_run, id] = call.values;
+                latest = { id, job: "blocklist_sync", finished_at, outcome, added, removed, error, dry_run };
               }
               return { success: true };
             },
@@ -441,6 +441,30 @@ describe("run history records every run", () => {
     // 记账失败绝不能把同步本身带崩。
     await expect(runSync(env)).resolves.toMatchObject({ runId: null });
     expect(errors.some((l) => l.includes("worker_run_store_error"))).toBe(true);
+  });
+
+  it("marks a dry run as dry_run=1 so it cannot be mistaken for a real sync", async () => {
+    const parts = mockRunDb();
+    captureConsole();
+    stubCfFailAfter(99);
+
+    await runSync(fetchEnv(parts), { dryRun: true });
+
+    const update = parts.calls.find((c) => /UPDATE worker_runs/.test(c.sql));
+    expect(update!.values[1]).toBe("ok");
+    expect(update!.values[5]).toBe(1);
+  });
+
+  it("records dry_run=0 for a real sync", async () => {
+    const parts = mockRunDb();
+    captureConsole();
+    stubCfFailAfter(99);
+
+    await runSync(fetchEnv(parts), {});
+
+    const update = parts.calls.find((c) => /UPDATE worker_runs/.test(c.sql));
+    expect(update!.values[1]).toBe("ok");
+    expect(update!.values[5]).toBe(0);
   });
 
   it("the scheduled handler records and logs a failure instead of swallowing it", async () => {

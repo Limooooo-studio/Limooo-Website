@@ -91,9 +91,10 @@ A fully serverless personal website and admin system running at [limooo.cn](http
 │   ├── upload_originals.sh                           # private R2 backup of portfolio originals
 │   ├── security-headers.json                         # single source of the response-header baseline
 │   ├── tailwind.config.js                            # Tailwind config for the prebuilt CSS
-│   ├── check_config_contract.py / check_gate_trust.py / check_security_headers.py / check_ip_rays.py / check_ray_id.py / check_visitor_id.py
+│   ├── check_config_contract.py / check_gate_trust.py / check_security_headers.py / check_license_headers.py / check_ip_rays.py / check_ray_id.py / check_visitor_id.py / check_blocklist_sync.py / zone_settings.py
 │   ├── migrations/                                   # D1 schema migrations
 │   ├── waf/                                          # WAF rule snapshots
+│   ├── zone-settings.snapshot.json                   # read-only zone-settings snapshot (ops/zone_settings.py)
 │   ├── cloudflare/                                   # Cloudflare resource inventory (declarative)
 │   ├── email-templates/                              # transactional email framework + i18n copy
 │   ├── fonts/                                        # gate-diagnostic font subset

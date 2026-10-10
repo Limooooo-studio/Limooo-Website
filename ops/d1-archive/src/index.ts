@@ -31,6 +31,11 @@
  *   2. scheduled() 显式 await + try/catch，失败打结构化单行 JSON 到 Workers 日志；
  *   3. GET /?health=1 只报健康状态（不触发归档），返回 { ok, job, lastRun }。
  * 归档逻辑本身（TABLES、R2 键、gzip 内容、day 的算法）一行未改。
+ *
+ * 第二个 stage（2026-10-11 补，灾备快照）：同一个 cron 里再跑一次配置与 schema
+ * 快照（R2 `backup/YYYY_MM_DD/`，job='config_backup'，实现在 ./config-backup.ts）。
+ * 两个 stage 是**并列**的：归档先跑，快照后跑，各自 try/catch，互不牵连 ——
+ * 快照失败绝不能让归档失败，反之亦然。
  */
 
 import {
@@ -40,38 +45,14 @@ import {
   updateRun,
   type RunRow,
 } from "../../sync-worker/src/runlog";
-
-interface D1Result<T> {
-  results: T[];
-  success: boolean;
-}
-
-interface D1Statement {
-  bind(...values: unknown[]): D1Statement;
-  all<T = Record<string, unknown>>(): Promise<D1Result<T>>;
-  /**
-   * 归档本身只读（全走 all()），但运行记录（runlog.updateRun）需要 run()。
-   * 这个声明必须与 ops/workers.d.ts 的 D1PreparedStatement 结构一致，否则
-   * `D1Database` 不能赋给 runlog 的 `RunDatabase`（tsc: prepare() 返回值不兼容）。
-   */
-  run(): Promise<unknown>;
-}
-
-interface D1Database {
-  prepare(sql: string): D1Statement;
-}
-
-interface R2Object {
-  key: string;
-}
-
-interface R2Bucket {
-  put(
-    key: string,
-    value: ArrayBuffer | ReadableStream<Uint8Array> | string,
-    options?: { httpMetadata?: { contentType?: string; contentEncoding?: string } },
-  ): Promise<R2Object | null>;
-}
+import {
+  CONFIG_JOB,
+  runConfigBackup,
+  type D1Database,
+  type R2Bucket,
+} from "./config-backup";
+import { gzipJsonl } from "./jsonl";
+import { logRun } from "./log";
 
 interface Env {
   DB: D1Database;
@@ -133,16 +114,10 @@ function previousUtcDay(now = new Date()): { day: string; start: number; end: nu
   return utcDateParts(todayStart - 86400);
 }
 
-async function gzipJsonl(rows: unknown[]): Promise<ArrayBuffer> {
-  const encoder = new TextEncoder();
-  const source = rows.map((row) => `${JSON.stringify(row)}\n`).join("");
-  const stream = new Blob([encoder.encode(source)]).stream().pipeThrough(new CompressionStream("gzip"));
-  return new Response(stream).arrayBuffer();
-}
-
 async function archiveTable(env: Env, table: TableSpec, day: { day: string; start: number; end: number }): Promise<number> {
   // visitor_rollups 用 bucket_hour，其余分析表使用 ts；两者都是 UTC epoch 秒。
   const rows = await env.DB.prepare(table.sql).bind(day.start, day.end).all();
+  // gzipJsonl 与配置快照共用（见 ./jsonl.ts）：两条路径的字节格式必须一模一样。
   const payload = await gzipJsonl(rows.results ?? []);
   await env.ARCHIVE.put(`analytics/${day.day}/${table.name}.jsonl.gz`, payload, {
     httpMetadata: { contentType: "application/x-ndjson", contentEncoding: "gzip" },
@@ -159,20 +134,6 @@ export async function archivePreviousDay(env: Env, now = new Date()): Promise<Re
 }
 
 /**
- * 结构化单行 JSON 运行日志（与 ops/sync-worker/src/index.ts 的 logRun 同形）。
- * 失败走 console.error，因此 `outcome:"failed"` 在 Workers 日志里可检索。
- */
-function logRun(fields: Record<string, unknown> & { outcome?: string }): void {
-  const payload: { event: string; ts: number; job: string; outcome?: string } & Record<
-    string,
-    unknown
-  > = { event: JOB, ts: runStartedAt(), job: JOB, ...fields };
-  const line = JSON.stringify(payload);
-  if (payload.outcome === "failed") console.error(line);
-  else console.log(line);
-}
-
-/**
  * scheduled / fetch 共用的入口：归档前一天，并把这次运行写成 worker_runs 的一行。
  *
  * 归档本身抛错时先记 outcome='failed'（带 error）再继续往外抛 —— 「抛了」与
@@ -184,7 +145,7 @@ export async function runArchive(
 ): Promise<{ counts: Record<string, number>; runId: number | null }> {
   const startedAt = runStartedAt();
   const runId = await insertRun(env.DB, JOB, startedAt);
-  logRun({ outcome: "started" });
+  logRun(JOB, { outcome: "started" });
   try {
     const counts = await archivePreviousDay(env, now);
     await updateRun(env.DB, runId, {
@@ -192,8 +153,10 @@ export async function runArchive(
       outcome: "ok",
       // added/removed 是同步语义的列，归档不用；total 记进日志，明细在成功那行的 counts。
       added: Object.values(counts).reduce((sum, n) => sum + n, 0),
+      // 归档没有演练模式：写了就是写了。
+      dryRun: false,
     });
-    logRun({ outcome: "ok", counts, duration_ms: runStartedAt() - startedAt });
+    logRun(JOB, { outcome: "ok", counts, duration_ms: runStartedAt() - startedAt });
     return { counts, runId };
   } catch (error) {
     await updateRun(env.DB, runId, {
@@ -201,7 +164,7 @@ export async function runArchive(
       outcome: "failed",
       error: String(error),
     });
-    logRun({ outcome: "failed", error: String(error), duration_ms: runStartedAt() - startedAt });
+    logRun(JOB, { outcome: "failed", error: String(error), duration_ms: runStartedAt() - startedAt });
     throw error;
   }
 }
@@ -251,23 +214,23 @@ export default {
     // 必须显式 await 进一个 try/catch：`ctx.waitUntil(archivePreviousDay(env))`
     // 会把 rejection 吞掉，归档连续失败也只在 cron 面板上显示成功。
     const work = (async () => {
+      // stage 1：分析明细归档（analytics/YYYY_MM_DD/，按数据所属的 UTC 日）。
       try {
         const { counts } = await runArchive(env);
-        logRun({
+        logRun(JOB, {
           outcome: "scheduled_ok",
           archived: Object.values(counts).reduce((sum, n) => sum + n, 0),
         });
       } catch (error) {
-        console.error(
-          JSON.stringify({
-            event: JOB,
-            ts: runStartedAt(),
-            job: JOB,
-            outcome: "failed",
-            stage: "scheduled",
-            error: String(error),
-          }),
-        );
+        logRun(JOB, { outcome: "failed", stage: "scheduled", error: String(error) });
+      }
+      // stage 2：配置与 schema 快照（backup/YYYY_MM_DD/，按快照产生的 UTC 日）。
+      // 独立的 try/catch：stage 1 失败不影响 stage 2，stage 2 失败也绝不能让
+      // 已经写进 R2 的归档变成一次「失败运行」—— 两个 job 的运行记录各自成行。
+      try {
+        await runConfigBackup(env);
+      } catch (error) {
+        logRun(CONFIG_JOB, { outcome: "failed", stage: "scheduled", error: String(error) });
       }
     })();
     /**

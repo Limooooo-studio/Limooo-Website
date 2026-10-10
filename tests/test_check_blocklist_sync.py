@@ -283,6 +283,7 @@ def test_record_writes_one_worker_runs_row(monkeypatch, capsys):
     assert "INSERT INTO worker_runs" in sql
     assert f"'{cbs.CHECK_JOB}'" in sql
     assert "'ok'" in sql
+    assert sql.rstrip().endswith("0)")  # dry_run=0：检查不是演练
     assert f"recorded this check as {cbs.CHECK_JOB} outcome=ok" in out
 
 
