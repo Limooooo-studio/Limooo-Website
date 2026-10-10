@@ -66,7 +66,6 @@ const FORBIDDEN_TABLES = [
   "ray_log_v2",
   "events",
   "heartbeats",
-  "probe_uptime_daily",
   "gate_failures",
   "auth_sessions",
   "_cf_KV",
@@ -339,9 +338,9 @@ describe("config backup snapshot", () => {
       ...CONFIG_TABLES.map((table) => `${prefix}${table.name}.jsonl.gz`),
     ];
     expect(r2.puts.map((call) => call.key).sort()).toEqual([...expected].sort());
-    // 一天 = 12 个对象：ddl + schema + 9 张表 + manifest。
-    expect(r2.puts).toHaveLength(12);
-    expect(result.objects).toBe(12);
+    // 一天 = 13 个对象：ddl + schema + 10 张表 + manifest。
+    expect(r2.puts).toHaveLength(13);
+    expect(result.objects).toBe(13);
     expect(result.day).toBe("2026_10_11");
 
     // 键路径必须落在 backup/ 下，且一个 analytics/ 对象都不许写。
@@ -436,7 +435,14 @@ describe("config backup snapshot", () => {
     const excluded = manifest.excluded_tables.map((table: { name: string }) => table.name);
     expect(excluded).toContain("visitors");
     expect(excluded).toContain("visitors_daily");
-    expect(excluded).toContain("probe_uptime_daily");
+    // probe_uptime_daily 于 2026-10-11 从排除清单移进白名单：它是唯一**不可重建**的表
+  // （heartbeats 只留 30 天、它留 90 天，worker 漏一天就永久丢失那天的在线率），
+  // 而实测只 75 行、上限约 270 行、预算从 428 增到 ~503 行/天。两个方向都断言，
+  // 防止有人又把它挪回排除清单。
+  expect(excluded).not.toContain("probe_uptime_daily");
+  expect(manifest.tables.map((table: { name: string }) => table.name)).toContain(
+    "probe_uptime_daily",
+  );
     expect(manifest.restore.ddl).toContain("wrangler d1 execute");
   });
 
@@ -477,7 +483,7 @@ describe("config backup snapshot", () => {
     expect(r2.puts.map((call) => call.key)).not.toContain(
       "backup/2026_10_11/blocklist_audit.jsonl.gz",
     );
-    expect(r2.puts).toHaveLength(11);
+    expect(r2.puts).toHaveLength(12);
     const manifest = JSON.parse(asText(putFor(r2.puts, "backup/2026_10_11/manifest.json").value));
     const report = manifest.tables.find((table: { name: string }) => table.name === "blocklist_audit");
     expect(report.error).toMatch(/simulated/);

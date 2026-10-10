@@ -206,6 +206,11 @@ export const CONFIG_TABLES: readonly ConfigTableSpec[] = [
     orderBy: "id",
     why: "Cron run history for all jobs; the only record of whether the sync/archive actually ran.",
   },
+  {
+    name: "probe_uptime_daily",
+    orderBy: "day",
+    why: "Daily uptime rollup (probe_id, day, total, up). It is the one table that CANNOT be rebuilt: heartbeats keep only 30 days and the rollup keeps 90, so past availability is unrecoverable once the worker misses it. Measured cost when added: 75 rows (bounds: 90 days x probe count, so ~270 once the window fills), taking the daily snapshot read from 428 to ~503 rows - 0.01% of the 5,000,000/day limit.",
+  },
 ];
 
 export interface ExcludedTable {
@@ -245,10 +250,6 @@ export const EXCLUDED_TABLES: readonly ExcludedTable[] = [
   {
     name: "heartbeats",
     why: "Probe liveness detail at ~3 rows/minute, pruned after 30 days. Bulk telemetry, not configuration.",
-  },
-  {
-    name: "probe_uptime_daily",
-    why: "Daily uptime rollup: irreplaceable beyond the 30-day heartbeats window, but a volume table (90 days x probes). A separate windowed copy is the better vehicle if the status page history must be recoverable.",
   },
   {
     name: "ray_log",
