@@ -34,6 +34,7 @@
 #
 # config contract vs. artifact drift are two different gates, keep both:
 #   check_config_contract.py  -- contract <-> src/config.py <-> functions/_lib/config.ts
+#   check_requirements_lock.py -- requirements.lock stays in step with ops/requirements.txt
 #                                semantically agree (a field added to the contract but
 #                                never consumed fails here, and build does not complain)
 #   the inline check below    -- after build, no generated file differs from git (drift)
@@ -311,6 +312,10 @@ if [ "$RUN_PY" = 1 ]; then
     fi
     echo "[ci] python ops/check_config_contract.py"
     (cd "$TARGET" && "$PYTHON_BIN" ops/check_config_contract.py)
+    # 2026-10-11 加：Dependabot 把 cairosvg 升到 2.9.1 而 requirements.lock 仍钉 2.8.2，
+    # 于是升级静默无效（build.sh 装的是 lock），CI 全绿也没发现。这条闸门专门盯它。
+    echo "[ci] python ops/check_requirements_lock.py --check"
+    (cd "$TARGET" && "$PYTHON_BIN" ops/check_requirements_lock.py --check)
     echo "[ci] python ops/check_security_headers.py"
     (cd "$TARGET" && "$PYTHON_BIN" ops/check_security_headers.py)
     echo "[ci] python ops/check_license_headers.py"
