@@ -166,19 +166,54 @@ def test_check_ip_rays_query_uses_the_index(migrated_db: sqlite3.Connection) -> 
     assert RAY_INDEX in plan, plan
 
 
-def test_ray_like_query_still_scans_but_is_documented(migrated_db: sqlite3.Connection) -> None:
-    """`ray LIKE '...'` 用的仍是 ts 索引——这是已知且可接受的，不是漏配索引。
+def test_ray_prefix_query_searches_the_primary_key(migrated_db: sqlite3.Connection) -> None:
+    """ray 前缀查必须走**主键 seek**，不能再退化成全扫。
 
-    ray 前缀只有运行时才知道，索引的第一个列必须被约束才用得上；而 ray 已经是
-    PRIMARY KEY。这条测试把现状钉住：哪天有人以为「所有 ray_log_v2 查询都该走
-    ip_hash 索引」而改坏 SQL，这里会红。
+    历史：`WHERE ray LIKE '<id>%'` 时 SQLite 用不上 PRIMARY KEY，计划是
+    `SCAN ray_log_v2 USING INDEX idx_ray_log_v2_ts`（2026-10-11 实测线上全扫）。
+    落库值带 colo 后缀（`a48923a17e543777-LAX`），所以前缀匹配是**有意**的，
+    不能改成等值；改成主键范围后计划变成
+    `SEARCH ray_log_v2 USING COVERING INDEX sqlite_autoindex_ray_log_v2_1 (ray>? AND ray<?)`。
+
+    这条测试钉住优化后的形状：有人把它改回 `LIKE` 就红。同时也说明为什么**不该**
+    期待它走 `idx_ray_log_v2_ip_hash_ts`——前缀约束的是主键，不是 ip_hash。
     """
     plan = _plan(
         migrated_db,
-        "SELECT ip_hash, country FROM ray_log_v2 WHERE ray LIKE '9a1b2c3d4e5f6a7b%' "
+        "SELECT ip_hash, country FROM ray_log_v2 "
+        "WHERE ray >= '9a1b2c3d4e5f6a7b' AND ray < '9a1b2c3d4e5f6a7b' || char(1114111) "
         "ORDER BY ts DESC LIMIT 100",
     )
-    assert "SCAN ray_log_v2 USING INDEX idx_ray_log_v2_ts" in plan, plan
+    # 断言实质而不是逐字：必须 `SEARCH`（不是 `SCAN`）、走主键自动索引、且两个边界都被约束。
+    # 是否 `COVERING` 取决于 select 列表（取 `ip_hash`/`country` 要回表），不该写死。
+    assert "SEARCH ray_log_v2 USING" in plan and "SCAN" not in plan, plan
+    assert "sqlite_autoindex_ray_log_v2_1" in plan, plan
+    assert "(ray>? AND ray<?)" in plan, plan
+
+
+def test_no_query_uses_ray_like_on_the_log_tables() -> None:
+    """源码里不得再出现 `ray LIKE` / `request_id LIKE` ——它们会全扫。
+
+    与上一条互补：上一条钉的是 SQL 形状（在内存库里），这一条钉的是**仓库源码**，
+    防止有人在 `functions/` 或 `ops/` 里新写一条 LIKE 反查又把全扫带回来。
+    """
+    offenders: list[str] = []
+    for directory in ("functions", "ops"):
+        base = ROOT / directory
+        if not base.is_dir():
+            continue
+        for path in sorted(base.rglob("*")):
+            if path.suffix not in (".ts", ".py", ".js") or not path.is_file():
+                continue
+            if any(part in ("node_modules", "__pycache__", "__mocks__") for part in path.parts):
+                continue
+            text = path.read_text(encoding="utf-8", errors="replace")
+            for lineno, line in enumerate(text.splitlines(), 1):
+                if line.lstrip().startswith(("#", "//", "*")):
+                    continue
+                if re.search(r"\b(ray|request_id)\s+LIKE\b", line, re.IGNORECASE):
+                    offenders.append(f"{path.relative_to(ROOT)}:{lineno}: {line.strip()[:80]}")
+    assert offenders == [], "prefix lookups must use a range, not LIKE:\n" + "\n".join(offenders)
 
 
 def test_no_query_filters_ray_log_v2_by_host() -> None:

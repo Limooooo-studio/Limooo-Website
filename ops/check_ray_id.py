@@ -113,22 +113,28 @@ def zone_id(cfg: dict[str, str]) -> str | None:
 
 def d1_lookup(cfg: dict[str, str], ray: str) -> tuple[list[str], str | None]:
     """D1 三表反查；返回 (格式化行, 错误信息)。"""
-    like = f"{ray}%"
+    # 前缀匹配是**有意**的：落库的 ray 值带 colo 后缀（`a48923a17e543777-LAX`），
+    # 而 `normalize_ray()` 只交出 16 位十六进制（因此下面拼接的值只含 [0-9a-f]，无注入面）。
+    # 用范围比较代替 `LIKE '<id>%'`：`ray` 在三张表里都是主键/有索引，实测
+    # `SCAN …`（全扫索引）→ `SEARCH … (col>? AND col<?)`。一次反查原本要扫
+    # ray_log 29332 + ray_log_v2 2351 + events 26884 ≈ 5.9 万条索引项。
+    # 上限用 `ray + U+10FFFF`：比任何可能的后缀都大，`-LAX`/`-SIN`/无后缀都能命中。
+    upper = f"{ray}{chr(0x10FFFF)}"
     queries = (
         (
             "ray_log_v2",
             "SELECT ray, ts, host, normalized_path AS path, method, status, "
-            f"ip_hash, country FROM ray_log_v2 WHERE ray LIKE '{like}' ORDER BY ts DESC LIMIT 100",
+            f"ip_hash, country FROM ray_log_v2 WHERE ray >= '{ray}' AND ray < '{upper}' ORDER BY ts DESC LIMIT 100",
         ),
         (
             "ray_log",
             "SELECT ray, ts, host, path, method, status, ip, country "
-            f"FROM ray_log WHERE ray LIKE '{like}' ORDER BY ts DESC LIMIT 100",
+            f"FROM ray_log WHERE ray >= '{ray}' AND ray < '{upper}' ORDER BY ts DESC LIMIT 100",
         ),
         (
             "events",
             "SELECT event, ts, request_id AS ray, host, path, method, status, "
-            f"outcome, ip_hash, country FROM events WHERE request_id LIKE '{like}' ORDER BY ts DESC LIMIT 100",
+            f"outcome, ip_hash, country FROM events WHERE request_id >= '{ray}' AND request_id < '{upper}' ORDER BY ts DESC LIMIT 100",
         ),
     )
     lines: list[str] = []
