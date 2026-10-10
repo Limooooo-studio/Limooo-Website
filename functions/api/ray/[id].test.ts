@@ -34,11 +34,11 @@ vi.mock("../../_lib/session", async () => {
 
 const env = {} as Env;
 
-function context() {
+function context(id = "0123456789abcdef") {
   return {
-    request: new Request("https://visitor.limooo.cn/api/ray/0123456789abcdef"),
+    request: new Request(`https://visitor.limooo.cn/api/ray/${id}`),
     env,
-    params: { id: "0123456789abcdef" },
+    params: { id },
     next: async () => new Response("next"),
     waitUntil: vi.fn(),
   };
@@ -106,5 +106,45 @@ describe("ray API", () => {
     expect(data.rows[0]).not.toHaveProperty("country");
     expect(resp.headers.get("Cache-Control")).toBe("no-store");
     expect(resp.headers.get("Access-Control-Allow-Origin")).not.toBe("*");
+  });
+
+  // 线上实测（2026-10-11）：`LIKE '<id>%'` 让 D1 退化成 `SCAN … USING INDEX
+  // idx_ray_log_v2_ts`（全表扫），而 `ray` 是 TEXT PRIMARY KEY —— 改写成主键范围后
+  // 计划变成 `SEARCH … USING INDEX sqlite_autoindex_ray_log_v2_1 (ray>? AND ray<?)`。
+  // 这条用例把那个形状钉住：改回 LIKE 就红。
+  it("looks the ray up with a primary-key range, not a LIKE scan", async () => {
+    await onRequestGet(context() as never);
+
+    // queryAll(db, sql, ...values) —— 第一个参数是 D1 绑定，SQL 在第二个位置。
+    const [, sql, ...bounds] = vi.mocked(queryAll).mock.calls[0] as [unknown, string, ...string[]];
+    expect(sql).toContain("WHERE ray >= ? AND ray < ?");
+    expect(sql).not.toMatch(/ray\s+LIKE/i);
+    // 下界是 16 位十六进制 id；上界必须是"比任何后缀都大"的那个值，
+    // 否则带 colo 后缀的落库值（`…-LAX`）会漏掉，或将来换后缀就查不到。
+    expect(bounds[0]).toBe("0123456789abcdef");
+    expect(bounds[1]).toBe("0123456789abcdef\u{10ffff}");
+    expect(bounds[1]! > "0123456789abcdef-LAX").toBe(true);
+  });
+
+  it("matches a stored ray that carries a colo suffix", async () => {
+    // 回归保护：落库值是 `a48923a17e543777-LAX`（20 字符），调用方只给 16 位十六进制。
+    // 桩把"库里带后缀的那一行"返回，断言端点把它当成命中而不是空结果。
+    vi.mocked(queryAll).mockResolvedValueOnce([{
+      ray: "0123456789abcdef-LAX",
+      ts: 7,
+      host: "limooo.cn",
+      path: "/x",
+      method: "GET",
+      status: 200,
+      ip_hash: "h",
+      ua_family: "chrome",
+    }] as never);
+
+    const resp = await onRequestGet(context("0123456789ABCDEF-LAX") as never);
+    const data = await resp.json();
+
+    expect(resp.status).toBe(200);
+    expect(data.rows).toHaveLength(1);
+    expect(data.rows[0].ray).toBe("0123456789abcdef-LAX");
   });
 });

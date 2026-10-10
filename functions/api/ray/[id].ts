@@ -42,14 +42,21 @@ export const onRequestGet: PagesFunction<Env> = async ({ env, params, request })
   if (!/^[0-9a-f]{16}$/.test(id)) {
     return Response.json({ ok: false, error: "invalid ray id" }, { status: 400, headers: { "Cache-Control": "no-store" } });
   }
+  // 前缀匹配是**有意**的：落库的 `ray` 带 colo 后缀（`a48923a17e543777-LAX`，20 字符），
+  // 而调用方给的是 16 位十六进制。用主键范围代替 `LIKE '<id>%'`：两者语义相同，
+  // 但 `ray` 是 TEXT PRIMARY KEY，范围比较能走 `sqlite_autoindex_ray_log_v2_1`，
+  // 而 `LIKE` 用不上主键索引、退化成按 `idx_ray_log_v2_ts` 全表扫（线上实测
+  // `SCAN` → `SEARCH ... (ray>? AND ray<?)`）。上限用 `id` + U+10FFFF：它比任何
+  // 可能的后缀都大，所以 `-LAX`、`-SIN` 乃至将来没有后缀或换别的后缀都能命中。
   const rows = await queryAll<RayRow>(
     env.DB,
     `SELECT ray, ts, host, normalized_path AS path, method, status, ip_hash, ua_family
      FROM ray_log_v2
-     WHERE ray LIKE ?
+     WHERE ray >= ? AND ray < ?
      ORDER BY ts DESC
      LIMIT 100`,
-    `${id}%`,
+    id,
+    `${id}\u{10ffff}`,
   );
   const safeRows = rows.map(({ ray, ts, host, path, method, status, ip_hash, ua_family }) => ({
     ray, ts, host, path, method, status, ip_hash, ua_family,
