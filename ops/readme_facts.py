@@ -36,6 +36,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import subprocess
 import sys
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -204,6 +205,50 @@ def print_repo_facts(facts: dict) -> None:
     print(f"  {', '.join(facts['managed_hosts'])}")
 
 
+def _git_check_ignore(path: str, root: str) -> bool:
+    try:
+        done = subprocess.run(
+            ["git", "check-ignore", "-q", "--", path],
+            cwd=root,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except OSError:
+        return False
+    return done.returncode == 0
+
+
+def git_ignored(path: str, root: str = BASE_DIR) -> bool:
+    """该路径是否被 .gitignore 排除（`secrets/` 这类只在本机存在、不入库的东西）。
+
+    目录树校验要在「CI 的干净 checkout」里也成立，所以不能只看本机文件系统：
+    被忽略的路径本来就不进仓库，本机有、CI 没有都算正常。
+    路径不存在时 git 分不清它是文件还是目录，因此带尾斜杠再问一次 —— `secrets/`
+    这种只匹配目录的规则，写成 `secrets` 会答「没被忽略」，带尾斜杠才认（就是
+    2026-10-11 那次 CI 变红的坑）。
+    git 不可用（无 git、非仓库）时返回 False，由调用方按文件系统兜底。
+    """
+    return any(_git_check_ignore(candidate, root) for candidate in (path, f"{path}/"))
+
+
+def tree_problems(root: str, paths: list[str]) -> list[str]:
+    """目录树里写了、但干净的 checkout 里并不存在的路径。
+
+    两类豁免：被 .gitignore 排除的条目（`secrets/` 在本机存在、CI 里没有）、
+    以及父目录链本身就缺的条目（父目录自己已经算过一次了）。其余一律报漂移。
+    """
+    problems: list[str] = []
+    for path in paths:
+        full = os.path.join(root, path)
+        if os.path.exists(full) or git_ignored(path, root):
+            continue
+        parent = os.path.dirname(full)
+        if parent and os.path.exists(parent):
+            problems.append(f"tree lists a path that does not exist: {path}")
+    return problems
+
+
 def check(facts: dict) -> list[str]:
     """README 与仓库事实对账；返回漂移清单（空 = 一致）。"""
     text = read(README)
@@ -247,14 +292,9 @@ def check(facts: dict) -> list[str]:
     if f"{count} languages" not in text and f"in {count} language" not in text:
         problems.append(f"language count ({count}) not stated")
 
-    # 目录树里的路径必须存在。父目录本身就不存在的条目（secrets/ 这类只在
-    # 本机存在、不入库的目录）跳过：CI 的干净 checkout 里当然没有。
-    for path in tree_paths():
-        full = os.path.join(BASE_DIR, path)
-        if os.path.exists(full):
-            continue
-        if os.path.exists(os.path.dirname(full)):
-            problems.append(f"tree lists a path that does not exist: {path}")
+    # 目录树里的路径必须存在（判据见 tree_problems：被 .gitignore 排除的本机
+    # 目录不计，否则本地有 secrets/ 时通过、CI 的干净 checkout 上必红）。
+    problems.extend(tree_problems(BASE_DIR, tree_paths()))
 
     # 信任清单计数
     trust = facts["gate_trust"]
